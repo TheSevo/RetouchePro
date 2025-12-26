@@ -1151,10 +1151,20 @@ export default function App() {
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-sm text-left">
-                <thead>
+                <thead className="bg-gray-50 text-gray-500 sticky top-0">
                     <tr>
                         <th className="p-2 bg-gray-100">Détails</th>
-                        <th className="cursor-pointer bg-gray-100 p-2 hover:bg-gray-200" onClick={() => handleSort('dateCreated')}>Date {sortConfig.key === 'dateCreated' && <ArrowUpDown size={14} className="inline"/>}</th>
+                        {/* --- MODIFICATION ICI : REMPLACEMENT DE "DATE" PAR 3 COLONNES --- */}
+                        <th className="cursor-pointer bg-gray-100 p-2 hover:bg-gray-200" onClick={() => handleSort('dateCreated')}>
+                            Date Arrivée {sortConfig.key === 'dateCreated' && <ArrowUpDown size={14} className="inline"/>}
+                        </th>
+                        <th className="cursor-pointer bg-gray-100 p-2 hover:bg-gray-200" onClick={() => handleSort('scheduledDeliveryDate')}>
+                            Date Prévue {sortConfig.key === 'scheduledDeliveryDate' && <ArrowUpDown size={14} className="inline"/>}
+                        </th>
+                         <th className="cursor-pointer bg-gray-100 p-2 hover:bg-gray-200" onClick={() => handleSort('dateDelivered')}>
+                            Date Envoi {sortConfig.key === 'dateDelivered' && <ArrowUpDown size={14} className="inline"/>}
+                        </th>
+                        {/* ------------------------------------------------------------------ */}
                         <th className="cursor-pointer bg-gray-100 p-2 hover:bg-gray-200" onClick={() => handleSort('id')}>BT</th>
                         <th className="cursor-pointer bg-gray-100 p-2 hover:bg-gray-200" onClick={() => handleSort('clientName')}>Client</th>
                         <th className="cursor-pointer bg-gray-100 p-2 hover:bg-gray-200" onClick={() => handleSort('status')}>Statut</th>
@@ -1170,7 +1180,11 @@ export default function App() {
                                         {expandedRows.has(bt.id) ? <EyeOff size={16}/> : <Eye size={16}/>}
                                     </button>
                                 </td>
-                                <td className="p-2">{formatDate(bt.dateCreated)}</td>
+                                {/* --- MODIFICATION ICI : AFFICHAGE DES 3 DATES --- */}
+                                <td className="p-2 text-xs">{formatDate(bt.dateCreated)}</td>
+                                <td className="p-2 text-xs">{formatDate(bt.scheduledDeliveryDate)}</td>
+                                <td className="p-2 text-xs font-medium text-gray-600">{bt.dateDelivered ? formatDate(bt.dateDelivered) : '-'}</td>
+                                {/* ------------------------------------------------ */}
                                 <td className="p-2 font-bold">#{bt.id}</td>
                                 <td className="p-2">{clients.find(c=>c.id===bt.clientId)?.name}</td>
                                 <td className="p-2"><span className="text-xs font-bold px-2 py-1 rounded bg-gray-200">{bt.status}</span></td>
@@ -1179,7 +1193,7 @@ export default function App() {
                             {/* LIGNE DE DÉTAIL DÉPLOYABLE */}
                             {expandedRows.has(bt.id) && (
                                 <tr className="bg-blue-50">
-                                    <td colSpan="6" className="p-4">
+                                    <td colSpan="8" className="p-4"> {/* colSpan augmenté à 8 car +2 colonnes */}
                                         <div className="text-xs grid grid-cols-2 gap-4 mb-2">
                                             <div><strong>Date Entrée :</strong> {new Date(bt.dateCreated).toLocaleString()}</div>
                                             <div><strong>Date Sortie (BL) :</strong> {bt.dateDelivered ? new Date(bt.dateDelivered).toLocaleString() : '-'}</div>
