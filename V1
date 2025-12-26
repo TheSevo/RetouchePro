@@ -4,7 +4,7 @@ import {
   FileText, Settings, Users, Scissors, 
   Trash2, Search, X, Edit2, Clock, 
   BarChart2, Calendar, Download, Sparkles, Loader,
-  PackageCheck, Archive, Lock, RotateCcw, AlertCircle, Upload, ScanBarcode, KeyRound, LogOut, ChevronRight, ChevronDown, Euro, Building, Coins, CalendarDays, MapPin, Hash, ListPlus, RefreshCcw, PenTool, ArrowUpDown, Tag, Filter, AlertTriangle, Timer, TrendingUp, Layers, ClipboardList, History, Eye, EyeOff
+  PackageCheck, Archive, Lock, RotateCcw, AlertCircle, Upload, ScanBarcode, KeyRound, LogOut, ChevronRight, ChevronDown, Euro, Building, Coins, CalendarDays, MapPin, Hash, ListPlus, RefreshCcw, PenTool, ArrowUpDown, Tag, Filter, AlertTriangle, Timer, TrendingUp, Layers, ClipboardList, History, Eye, EyeOff, Hourglass, Zap
 } from 'lucide-react';
 
 // --- UTILITAIRES ---
@@ -1222,7 +1222,7 @@ export default function App() {
     );
   };
 
-  // 5. STATISTIQUES (MODIFIÉ: RENTABILITÉ)
+  // 5. STATISTIQUES (MODIFIÉ: RENTABILITÉ & PRÉVISION)
   const StatsModule = () => {
     // Etats existants
     const [serviceSearch, setServiceSearch] = useState('');
@@ -1253,6 +1253,57 @@ export default function App() {
     useEffect(() => {
         setDailyHours(dailyStaff * 7);
     }, [dailyStaff]);
+
+    // --- NOUVEAU : CALCULS DES PRÉVISIONS ---
+    const forecastData = useMemo(() => {
+        // Bons qui ne sont pas encore livrés/facturés
+        const pendingBTs = workOrders.filter(bt => ['ATELIER', 'A_LIVRER', 'BL_EN_COURS'].includes(bt.status));
+        
+        let totalRevenue = 0;
+        let totalPieces = 0;
+        let totalTimeMinutes = 0;
+        const typeBreakdown = {};
+        const urgencyBreakdown = { late: 0, today: 0, tomorrow: 0, future: 0 };
+        
+        const today = getTodayDate();
+        const tomorrow = new Date();
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        const tomorrowStr = tomorrow.toISOString().split('T')[0];
+
+        pendingBTs.forEach(bt => {
+            // CA et Pièces
+            if (bt.pieces) {
+                bt.pieces.forEach(p => {
+                    totalPieces += p.quantity;
+                    typeBreakdown[p.categoryName] = (typeBreakdown[p.categoryName] || 0) + p.quantity;
+                    
+                    p.services.forEach(s => {
+                        totalRevenue += (s.price * p.quantity);
+                        // Temps estimé (seulement si en ATELIER)
+                        if (bt.status === 'ATELIER') {
+                            totalTimeMinutes += ((serviceTimes[s.name] || 0) * p.quantity);
+                        }
+                    });
+                });
+            }
+
+            // Urgences
+            const delivery = bt.scheduledDeliveryDate;
+            if (delivery < today) urgencyBreakdown.late++;
+            else if (delivery === today) urgencyBreakdown.today++;
+            else if (delivery === tomorrowStr) urgencyBreakdown.tomorrow++;
+            else urgencyBreakdown.future++;
+        });
+
+        return {
+            totalRevenue,
+            totalPieces,
+            totalTimeHours: Math.round(totalTimeMinutes / 60),
+            typeBreakdown,
+            urgencyBreakdown,
+            btCount: pendingBTs.length
+        };
+    }, [workOrders, serviceTimes]);
 
     // Calcul rentabilité journalière (AVEC FOURCHETTE DE DATES)
     const dailyData = useMemo(() => {
@@ -1367,6 +1418,71 @@ export default function App() {
         <div className="space-y-6">
             <h2 className="text-2xl font-bold text-gray-800">Rentabilité & Performance</h2>
             
+            {/* --- SECTION PRÉVISION (NOUVEAU) --- */}
+            <Card title="Section : Prévision (Charge de travail & CA en attente)">
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                    {/* Indicateurs clés */}
+                    <div className="space-y-4">
+                        <div className="p-4 bg-gradient-to-br from-blue-500 to-blue-700 rounded-lg text-white shadow-md">
+                            <div className="flex items-center gap-2 text-blue-100 text-xs font-bold uppercase mb-1"><TrendingUp size={14}/> CA Prévisionnel (BT non livrés)</div>
+                            <div className="text-3xl font-black">{formatPrice(forecastData.totalRevenue)}</div>
+                            <div className="text-xs text-blue-100 mt-1 opacity-80">Trésorerie engagée dans {forecastData.btCount} bons.</div>
+                        </div>
+                        <div className="p-4 bg-white border-2 border-orange-100 rounded-lg shadow-sm">
+                            <div className="flex items-center gap-2 text-orange-600 text-xs font-bold uppercase mb-1"><Hourglass size={14}/> Charge de travail restante</div>
+                            <div className="flex justify-between items-end">
+                                <div>
+                                    <div className="text-2xl font-black text-gray-800">{forecastData.totalPieces} pièces</div>
+                                    <div className="text-xs text-gray-400">À traiter dans l'atelier</div>
+                                </div>
+                                <div className="text-right">
+                                    <div className="text-xl font-bold text-orange-600">~ {forecastData.totalTimeHours}h</div>
+                                    <div className="text-[10px] text-gray-400">Estimé (Paramètres temps)</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Types de pièces à faire */}
+                    <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
+                        <div className="text-xs font-bold text-gray-500 uppercase mb-3 flex items-center gap-2"><Layers size={14}/> Types de pièces à faire</div>
+                        <div className="space-y-2 max-h-32 overflow-y-auto pr-1">
+                            {Object.entries(forecastData.typeBreakdown).length > 0 ? (
+                                Object.entries(forecastData.typeBreakdown).sort((a,b) => b[1] - a[1]).map(([type, count]) => (
+                                    <div key={type} className="flex justify-between items-center bg-white p-2 rounded border border-gray-100 shadow-sm">
+                                        <span className="text-sm font-medium text-gray-700">{type}</span>
+                                        <span className="bg-blue-100 text-blue-800 px-2 py-0.5 rounded-full text-xs font-bold">{count}</span>
+                                    </div>
+                                ))
+                            ) : <div className="text-center text-gray-400 italic text-sm py-4">Aucune pièce en attente</div>}
+                        </div>
+                    </div>
+
+                    {/* Urgences et Priorités */}
+                    <div className="bg-white rounded-lg p-4 border border-gray-200">
+                        <div className="text-xs font-bold text-gray-500 uppercase mb-3 flex items-center gap-2"><AlertTriangle size={14}/> Analyse des Urgences (Tickets)</div>
+                        <div className="grid grid-cols-2 gap-2">
+                            <div className={`p-2 rounded border flex flex-col items-center justify-center ${forecastData.urgencyBreakdown.late > 0 ? 'bg-red-50 border-red-200' : 'bg-gray-50 border-gray-100 opacity-50'}`}>
+                                <div className="text-xl font-black text-red-600">{forecastData.urgencyBreakdown.late}</div>
+                                <div className="text-[10px] font-bold text-red-800 uppercase">En Retard</div>
+                            </div>
+                            <div className={`p-2 rounded border flex flex-col items-center justify-center ${forecastData.urgencyBreakdown.today > 0 ? 'bg-purple-50 border-purple-200' : 'bg-gray-50 border-gray-100 opacity-50'}`}>
+                                <div className="text-xl font-black text-purple-600">{forecastData.urgencyBreakdown.today}</div>
+                                <div className="text-[10px] font-bold text-purple-800 uppercase">Aujourd'hui</div>
+                            </div>
+                            <div className={`p-2 rounded border flex flex-col items-center justify-center ${forecastData.urgencyBreakdown.tomorrow > 0 ? 'bg-orange-50 border-orange-200' : 'bg-gray-50 border-gray-100 opacity-50'}`}>
+                                <div className="text-xl font-black text-orange-600">{forecastData.urgencyBreakdown.tomorrow}</div>
+                                <div className="text-[10px] font-bold text-orange-800 uppercase">Demain</div>
+                            </div>
+                            <div className="p-2 bg-blue-50 border border-blue-100 rounded flex flex-col items-center justify-center">
+                                <div className="text-xl font-black text-blue-600">{forecastData.urgencyBreakdown.future}</div>
+                                <div className="text-[10px] font-bold text-blue-800 uppercase">À venir</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </Card>
+
             {/* CARTE RENTABILITÉ JOURNALIÈRE (MODIFIÉE AVEC RANGE) */}
             <Card title="Rentabilité Journalière (ou Période courte)">
                 <div className="flex flex-col md:flex-row gap-6">
