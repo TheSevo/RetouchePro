@@ -1,0 +1,1579 @@
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { 
+  Plus, Save, Printer, CheckCircle, Truck, 
+  FileText, Settings, Users, Scissors, 
+  Trash2, Search, X, Edit2, Clock, 
+  BarChart2, Calendar, Download, Sparkles, Loader,
+  PackageCheck, Archive, Lock, RotateCcw, AlertCircle, Upload, ScanBarcode, KeyRound, LogOut, ChevronRight, ChevronDown, Euro, Building, Coins, CalendarDays, MapPin, Hash, ListPlus, RefreshCcw, PenTool, ArrowUpDown, Tag, Filter, AlertTriangle, Timer, TrendingUp, Layers, ClipboardList, History
+} from 'lucide-react';
+
+// --- UTILITAIRES ---
+const generateId = () => Math.random().toString(36).substr(2, 6).toUpperCase(); 
+const formatPrice = (price) => new Intl.NumberFormat('fr-FR', { style: 'currency', currency: 'EUR' }).format(price);
+const formatDate = (dateString) => dateString ? new Date(dateString).toLocaleDateString('fr-FR') : '-';
+const getTodayDate = () => new Date().toISOString().split('T')[0]; 
+
+// Fonction de regroupement des services (Stacking)
+const groupServices = (services, showComments = true) => {
+  if (!services) return [];
+  const groups = {};
+  services.forEach(s => {
+    const key = `${s.name}-${s.price}`;
+    if (!groups[key]) {
+      groups[key] = { name: s.name, price: s.price, count: 0, comments: [] };
+    }
+    groups[key].count++;
+    if (s.comment && s.comment.trim() !== '' && showComments) {
+        groups[key].comments.push(s.comment);
+    }
+  });
+
+  return Object.values(groups).map(g => {
+    const qtyPrefix = g.count > 1 ? `${g.count}x ` : '';
+    const uniqueComments = [...new Set(g.comments)];
+    const commentStr = uniqueComments.length > 0 ? ` (${uniqueComments.join(', ')})` : '';
+    return `${qtyPrefix}${g.name}${commentStr}`;
+  });
+};
+
+// Calcul de la date de livraison par défaut (J+2 ou Lundi/Mardi)
+const calculateDefaultDeliveryDate = () => {
+  const date = new Date();
+  const day = date.getDay(); // 0 = Dimanche, 1 = Lundi, ...
+  
+  let daysToAdd = 2; // Par défaut J+2 (Lundi -> Mercredi, etc.)
+  
+  if (day === 5) { // Vendredi -> Lundi (+3)
+      daysToAdd = 3;
+  } else if (day === 6) { // Samedi -> Mardi (+3)
+      daysToAdd = 3;
+  } else if (day === 0) { // Dimanche -> Mardi (+2)
+      daysToAdd = 2;
+  }
+
+  date.setDate(date.getDate() + daysToAdd);
+  return date.toISOString().split('T')[0];
+};
+
+// --- COMPOSANTS UI ---
+const Button = ({ children, onClick, variant = 'primary', className = '', type = 'button', disabled = false, title = '' }) => {
+  const baseStyle = "px-4 py-2 rounded-md font-medium transition-colors flex items-center justify-center gap-2";
+  const variants = {
+    primary: "bg-blue-600 text-white hover:bg-blue-700 disabled:bg-blue-300",
+    secondary: "bg-gray-100 text-gray-700 hover:bg-gray-200",
+    success: "bg-green-600 text-white hover:bg-green-700",
+    warning: "bg-orange-500 text-white hover:bg-orange-600",
+    danger: "bg-red-100 text-red-600 hover:bg-red-200",
+    outline: "border border-gray-300 text-gray-700 hover:bg-gray-50",
+    magic: "bg-gradient-to-r from-purple-600 to-blue-500 text-white hover:from-purple-700 hover:to-blue-600 shadow-md",
+    ghost: "text-gray-500 hover:text-gray-700 hover:bg-gray-100 p-1 rounded"
+  };
+  return <button type={type} onClick={onClick} className={`${baseStyle} ${variants[variant]} ${className}`} disabled={disabled} title={title}>{children}</button>;
+};
+
+const Card = ({ title, children, className = '' }) => (
+  <div className={`bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden ${className}`}>
+    {title && <div className="px-6 py-4 border-b border-gray-100 bg-gray-50 font-semibold text-gray-800 flex justify-between items-center">{title}</div>}
+    <div className="p-6">{children}</div>
+  </div>
+);
+
+// --- COMPOSANT NOTIFICATION (TOAST) ---
+const Toast = ({ message, type, onClose }) => {
+    useEffect(() => { const timer = setTimeout(onClose, 3000); return () => clearTimeout(timer); }, [onClose]);
+    const bg = type === 'error' ? 'bg-red-500' : 'bg-green-600';
+    return (
+        <div className={`fixed bottom-4 right-4 ${bg} text-white px-6 py-3 rounded-lg shadow-lg flex items-center gap-3 z-[9999] animate-bounce`}>
+            {type === 'error' ? <AlertCircle size={20}/> : <CheckCircle size={20}/>}
+            {message}
+        </div>
+    );
+};
+
+// --- SON SCANNER ---
+const playScanSound = (success = true) => {
+  const AudioContext = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContext) return;
+  const audioCtx = new AudioContext();
+  const oscillator = audioCtx.createOscillator();
+  const gainNode = audioCtx.createGain();
+  oscillator.connect(gainNode);
+  gainNode.connect(audioCtx.destination);
+  
+  if (success) {
+      oscillator.type = 'sine'; oscillator.frequency.setValueAtTime(1000, audioCtx.currentTime); gainNode.gain.setValueAtTime(0.1, audioCtx.currentTime); 
+      oscillator.start(); oscillator.stop(audioCtx.currentTime + 0.1); 
+  } else {
+      oscillator.type = 'sawtooth'; oscillator.frequency.setValueAtTime(200, audioCtx.currentTime); gainNode.gain.setValueAtTime(0.1, audioCtx.currentTime); 
+      oscillator.start(); oscillator.stop(audioCtx.currentTime + 0.3); 
+  }
+};
+
+// --- APPLICATION PRINCIPALE ---
+export default function App() {
+  const [activeTab, setActiveTab] = useState('reception');
+  const [notification, setNotification] = useState(null);
+  const [receptionPrintData, setReceptionPrintData] = useState(null);
+  const [blCounter, setBlCounter] = useState(() => parseInt(localStorage.getItem('blCounter')) || 1);
+
+  // -- Sécurité --
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [passwordInput, setPasswordInput] = useState('');
+  const [adminPassword, setAdminPassword] = useState(() => localStorage.getItem('adminPassword') || '1234');
+
+  // -- Info Entreprise --
+  const [companyInfo, setCompanyInfo] = useState(() => {
+      const saved = localStorage.getItem('companyInfo');
+      return saved ? JSON.parse(saved) : { name: 'MA RETOUCHERIE', address: '12 Rue de la Couture, 75000 Paris', siret: '000 000 000', footer: 'Merci de votre confiance.' };
+  });
+
+  // -- Données Métier --
+  const [clients, setClients] = useState(() => {
+    const saved = localStorage.getItem('clients');
+    return saved ? JSON.parse(saved) : [{ id: 'c1', name: 'Boutique Élégance', email: 'contact@elegance.com', address: '', siret: '', tva: '', autoGenerateBt: false, btPrefix: '', nextBtSequence: 1, isHeadquarters: false, headquartersId: '' }];
+  });
+
+  const [categories, setCategories] = useState(() => {
+      const saved = localStorage.getItem('categories');
+      return saved ? JSON.parse(saved) : [{ id: 'cat1', name: 'Pantalon' }, { id: 'cat2', name: 'Veste' }, { id: 'cat3', name: 'Jupe/Robe' }];
+  });
+
+  const [services, setServices] = useState(() => {
+    const saved = localStorage.getItem('services');
+    return saved ? JSON.parse(saved) : [
+      { id: 's1', categoryId: 'cat1', name: 'Ourlet Simple', standardPrice: 10 },
+      { id: 's2', categoryId: 'cat1', name: 'Ourlet Invisible', standardPrice: 12 },
+      { id: 's3', categoryId: 'cat2', name: 'Cintrage', standardPrice: 25 }
+    ];
+  });
+
+  const [specificPrices, setSpecificPrices] = useState(() => {
+    const saved = localStorage.getItem('specificPrices');
+    return saved ? JSON.parse(saved) : [];
+  });
+
+  const [workOrders, setWorkOrders] = useState(() => {
+    const saved = localStorage.getItem('workOrders');
+    return saved ? JSON.parse(saved) : [];
+  });
+
+  const [editingBt, setEditingBt] = useState(null);
+
+  // Sauvegarde auto
+  useEffect(() => localStorage.setItem('clients', JSON.stringify(clients)), [clients]);
+  useEffect(() => localStorage.setItem('categories', JSON.stringify(categories)), [categories]);
+  useEffect(() => localStorage.setItem('services', JSON.stringify(services)), [services]);
+  useEffect(() => localStorage.setItem('specificPrices', JSON.stringify(specificPrices)), [specificPrices]);
+  useEffect(() => localStorage.setItem('workOrders', JSON.stringify(workOrders)), [workOrders]);
+  useEffect(() => localStorage.setItem('adminPassword', adminPassword), [adminPassword]);
+  useEffect(() => localStorage.setItem('companyInfo', JSON.stringify(companyInfo)), [companyInfo]);
+  useEffect(() => localStorage.setItem('blCounter', blCounter), [blCounter]);
+
+  // Helpers
+  const showToast = (msg, type = 'success') => setNotification({ message: msg, type });
+  
+  // Logique de prix avec héritage Siège
+  const getPrice = (clientId, serviceId) => {
+    const client = clients.find(c => c.id === clientId);
+    
+    // 1. Prix spécifique boutique
+    const specific = specificPrices.find(sp => sp.clientId === clientId && sp.serviceId === serviceId);
+    if (specific) return specific.price;
+    
+    // 2. Prix spécifique siège (si rattaché)
+    if (client && client.headquartersId) {
+        const hqSpecific = specificPrices.find(sp => sp.clientId === client.headquartersId && sp.serviceId === serviceId);
+        if (hqSpecific) return hqSpecific.price;
+    }
+
+    // 3. Prix standard
+    const service = services.find(s => s.id === serviceId);
+    return service ? service.standardPrice : 0;
+  };
+
+  const createWorkOrder = (btData) => {
+    if (workOrders.some(bt => bt.id === btData.id)) { 
+        showToast("Ce numéro de BT existe déjà !", 'error'); 
+        return null; 
+    }
+    const newBT = { 
+        ...btData, 
+        scheduledDeliveryDate: btData.deliveryDate, 
+        dateCreated: new Date().toISOString(), 
+        status: 'ATELIER', 
+        dateDelivered: null 
+    };
+    setWorkOrders(prev => [newBT, ...prev]);
+    return newBT;
+  };
+
+  // --- ACTIONS ---
+  const handleLogin = (e) => { e.preventDefault(); if (passwordInput === adminPassword) { setIsAuthenticated(true); setPasswordInput(''); } else { showToast("Mot de passe incorrect", 'error'); } };
+  
+  const deleteBT = (id) => { if(window.confirm("Supprimer définitivement ce bon ?")) { setWorkOrders(prev => prev.filter(bt => bt.id !== id)); showToast("Bon supprimé"); } };
+
+  const openEditModal = (bt) => { 
+      if (bt.status === 'FACTURE') return showToast("Impossible : Facturé", 'error'); 
+      let btToEdit = JSON.parse(JSON.stringify(bt));
+      if (!btToEdit.pieces) btToEdit.pieces = [];
+      setEditingBt(btToEdit); 
+  };
+
+  const saveEditedBT = () => {
+      if (!editingBt.pieces || editingBt.pieces.length === 0) {
+          setWorkOrders(prev => prev.filter(bt => bt.id !== editingBt.id));
+          showToast("BT vide supprimé");
+      } else {
+          setWorkOrders(prev => prev.map(bt => bt.id === editingBt.id ? editingBt : bt));
+          showToast("Modifications enregistrées");
+      }
+      setEditingBt(null);
+  };
+
+  // --- MODALE EDITION ---
+  const EditModal = () => {
+      if (!editingBt) return null;
+      
+      const updatePiece = (idx, field, value) => {
+          const newPieces = [...editingBt.pieces];
+          newPieces[idx][field] = value;
+          setEditingBt({...editingBt, pieces: newPieces});
+      };
+
+      const removePiece = (idx) => {
+          const newPieces = editingBt.pieces.filter((_, i) => i !== idx);
+          setEditingBt({...editingBt, pieces: newPieces});
+      };
+
+      const removeServiceFromPiece = (pieceIdx, serviceIdx) => {
+          const newPieces = [...editingBt.pieces];
+          const targetPiece = {...newPieces[pieceIdx]};
+          const targetServices = [...targetPiece.services];
+          targetServices.splice(serviceIdx, 1);
+          targetPiece.services = targetServices;
+          newPieces[pieceIdx] = targetPiece;
+          setEditingBt({...editingBt, pieces: newPieces});
+      };
+
+      const updateServicePrice = (pieceIdx, serviceIdx, newPrice) => {
+          const newPieces = [...editingBt.pieces];
+          const targetPiece = {...newPieces[pieceIdx]};
+          const targetServices = [...targetPiece.services];
+          targetServices.splice(serviceIdx, 1);
+          targetPiece.services = targetServices;
+          newPieces[pieceIdx] = targetPiece;
+          setEditingBt({...editingBt, pieces: newPieces});
+      };
+
+      return (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[10000] p-4">
+              <div className="bg-white rounded-lg shadow-xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh]">
+                  <div className="p-4 border-b flex justify-between items-center bg-blue-600 text-white">
+                      <h3 className="font-bold text-lg flex items-center gap-2"><Edit2 size={18}/> Modifier le BT #{editingBt.id}</h3>
+                      <button onClick={() => setEditingBt(null)} className="hover:bg-blue-700 p-1 rounded"><X size={20}/></button>
+                  </div>
+                  <div className="p-6 overflow-y-auto flex-1">
+                      <div className="grid grid-cols-2 gap-4 mb-6">
+                          <div>
+                              <label className="block text-sm font-bold text-gray-700 mb-1">Client</label>
+                              <select className="w-full border p-2 rounded" value={editingBt.clientId} onChange={e => setEditingBt({...editingBt, clientId: e.target.value})}>
+                                 {clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                              </select>
+                          </div>
+                          <div>
+                              <label className="block text-sm font-bold text-gray-700 mb-1">Livraison Prévue</label>
+                              <input type="date" className="w-full border p-2 rounded" value={editingBt.scheduledDeliveryDate || calculateDefaultDeliveryDate()} onChange={e => setEditingBt({...editingBt, scheduledDeliveryDate: e.target.value})} />
+                          </div>
+                      </div>
+                      <div className="space-y-4">
+                          <label className="block text-sm font-bold text-gray-700 border-b pb-2">Contenu du Bon ({editingBt.pieces ? editingBt.pieces.length : 0} pièces)</label>
+                          {editingBt.pieces && editingBt.pieces.map((piece, pIdx) => (
+                              <div key={pIdx} className="border rounded p-3 bg-gray-50">
+                                  <div className="flex justify-between mb-2">
+                                      <div className="font-bold text-blue-800">{piece.categoryName} <span className="text-gray-500 font-normal">({piece.designation})</span></div>
+                                      <div className="flex gap-2 items-center">
+                                          <span className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded">x{piece.quantity}</span>
+                                          <button onClick={() => removePiece(pIdx)} className="text-red-500 hover:text-red-700"><Trash2 size={16}/></button>
+                                      </div>
+                                  </div>
+                                  <div className="pl-4 border-l-2 border-blue-200 space-y-1">
+                                      {piece.services && piece.services.map((srv, sIdx) => (
+                                          <div key={sIdx} className="flex justify-between items-center text-sm bg-white p-1 rounded border">
+                                              <span>{srv.name}</span>
+                                              <div className="flex gap-2 items-center">
+                                                  <input type="number" className="w-16 text-right border rounded px-1 py-0.5" value={srv.price} onChange={(e) => updateServicePrice(pIdx, sIdx, e.target.value)}/>
+                                                  <span className="text-gray-500">€</span>
+                                                  <button onClick={() => removeServiceFromPiece(pIdx, sIdx)} className="text-red-400 hover:text-red-600 ml-2"><X size={14}/></button>
+                                              </div>
+                                          </div>
+                                      ))}
+                                  </div>
+                              </div>
+                          ))}
+                      </div>
+                  </div>
+                  <div className="p-4 border-t bg-gray-50 flex justify-end gap-2"><Button variant="outline" onClick={() => setEditingBt(null)}>Annuler</Button><Button onClick={saveEditedBT}>Enregistrer</Button></div>
+              </div>
+          </div>
+      );
+  };
+
+  // 1. RECEPTION (OPTIMISÉE VITESSE + FOCUS INTELLIGENT)
+  const ReceptionModule = () => {
+    const [selectedClient, setSelectedClient] = useState(localStorage.getItem('lastSelectedClient') || '');
+    const [deliveryDate, setDeliveryDate] = useState(calculateDefaultDeliveryDate());
+    const btIdInputRef = useRef(null);
+    const refArticleInputRef = useRef(null);
+    const freeNameRef = useRef(null);
+    const [btId, setBtId] = useState(''); 
+    const [isAutoGenerated, setIsAutoGenerated] = useState(false); 
+    const [currentCat, setCurrentCat] = useState('');
+    const [currentDesignation, setCurrentDesignation] = useState('');
+    const [currentServices, setCurrentServices] = useState([]);
+    const [labelCount, setLabelCount] = useState(1);
+    const [showFreeService, setShowFreeService] = useState(false);
+    const [freeServiceName, setFreeServiceName] = useState('');
+    const [freeServicePrice, setFreeServicePrice] = useState('');
+    const [freeServiceComment, setFreeServiceComment] = useState('');
+    const [piecesList, setPiecesList] = useState([]);
+
+    useEffect(() => {
+        if(selectedClient) {
+            localStorage.setItem('lastSelectedClient', selectedClient);
+            const client = clients.find(c => c.id === selectedClient);
+            if (client && client.autoGenerateBt && client.btPrefix) {
+                const nextSeq = client.nextBtSequence || 1;
+                setBtId(`${client.btPrefix}${nextSeq}`);
+                setIsAutoGenerated(true);
+            } else {
+                setBtId('');
+                setIsAutoGenerated(false);
+                if(btIdInputRef.current) btIdInputRef.current.focus();
+            }
+        }
+    }, [selectedClient, clients]);
+
+    useEffect(() => { if(btIdInputRef.current && !isAutoGenerated) btIdInputRef.current.focus(); }, [isAutoGenerated]);
+    useEffect(() => { if(showFreeService && freeNameRef.current) freeNameRef.current.focus(); }, [showFreeService]);
+    
+    useEffect(() => {
+        const timer = setTimeout(() => {
+            if (btId.length > 2 && selectedClient && !isAutoGenerated) {
+                if (workOrders.some(bt => bt.id === btId.trim())) {
+                    showToast("Ce numéro de BT existe déjà !", 'error');
+                }
+            }
+        }, 500);
+        return () => clearTimeout(timer);
+    }, [btId, selectedClient, isAutoGenerated, workOrders]);
+
+    useEffect(() => {
+        const handleKeyDown = (e) => { 
+            if (e.ctrlKey && e.key === 'Enter') { 
+                finalizeBT(); 
+            } 
+        };
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [btId, selectedClient, piecesList, deliveryDate]);
+
+    const filteredServices = services.filter(s => s.categoryId === currentCat);
+    
+    const startReception = () => { 
+        if (!btId.trim()) return showToast("La Réf BT est obligatoire !", 'error'); 
+        if (!selectedClient) return showToast("Sélectionnez un client", 'error'); 
+        if (workOrders.some(bt => bt.id === btId.trim())) return showToast("Ce numéro de BT existe déjà !", 'error'); 
+    };
+
+    const addServiceToCurrentPiece = (serviceId) => {
+        const service = services.find(s => s.id === serviceId);
+        if (!service) return;
+        setCurrentServices([...currentServices, { id: service.id, name: service.name, price: getPrice(selectedClient, service.id), comment: '' }]);
+    };
+    const updateCurrentServiceComment = (index, value) => { const updated = [...currentServices]; updated[index].comment = value; setCurrentServices(updated); };
+    const addFreeService = () => {
+        if(!freeServiceName || !freeServicePrice) return showToast("Nom et Prix obligatoires", 'error');
+        setCurrentServices([...currentServices, { id: 'FREE-' + generateId(), name: freeServiceName, price: parseFloat(freeServicePrice), comment: freeServiceComment }]);
+        setFreeServiceName(''); setFreeServicePrice(''); setFreeServiceComment(''); setShowFreeService(false);
+    };
+    const addPieceToCart = () => {
+        if (!currentCat) return showToast("Type de vêtement ?", 'error');
+        if (currentServices.length === 0) return showToast("Aucune prestation", 'error');
+        const categoryName = categories.find(c => c.id === currentCat)?.name;
+        const servicesWithComments = currentServices.map(s => ({ ...s, name: s.name, comment: s.comment }));
+        
+        const signature = (srvs) => JSON.stringify(srvs.map(s => ({name: s.name, price: s.price})).sort((a,b) => a.name.localeCompare(b.name)));
+        
+        const existingIndex = piecesList.findIndex(p => 
+            p.categoryId === currentCat && 
+            p.designation === currentDesignation &&
+            p.labelCount === labelCount &&
+            signature(p.services) === signature(servicesWithComments)
+        );
+
+        if (existingIndex >= 0) {
+            const newList = [...piecesList];
+            newList[existingIndex].quantity += 1;
+            setPiecesList(newList);
+        } else {
+            setPiecesList([...piecesList, { categoryId: currentCat, categoryName: categoryName, designation: currentDesignation, services: servicesWithComments, quantity: 1, labelCount: labelCount }]);
+        }
+        
+        setCurrentServices([]); setCurrentDesignation(''); setLabelCount(1);
+        if(refArticleInputRef.current) refArticleInputRef.current.focus();
+    };
+
+    const finalizeBT = () => {
+        if (!btId.trim()) return showToast("Référence BT manquante ! Scannez ou saisissez un numéro.", 'error');
+        if (piecesList.length === 0) return showToast("Le panier est vide ! Ajoutez des pièces (Bouton 'Ajouter') avant de valider.", 'error');
+        
+        const newOrder = createWorkOrder({ id: btId.trim(), clientId: selectedClient, pieces: piecesList, deliveryDate: deliveryDate });
+        if (newOrder) {
+            setReceptionPrintData(newOrder); setTimeout(() => window.print(), 300);
+            const client = clients.find(c => c.id === selectedClient);
+            if (client && client.autoGenerateBt) {
+                setClients(clients.map(c => c.id === client.id ? { ...c, nextBtSequence: (c.nextBtSequence || 1) + 1 } : c));
+            } else { setBtId(''); }
+            setPiecesList([]); setCurrentCat(''); setCurrentDesignation(''); setCurrentServices([]);
+            showToast("Bon enregistré !");
+            if(btIdInputRef.current && !isAutoGenerated) btIdInputRef.current.focus();
+        }
+    };
+    
+    const resetForm = () => { if (!isAutoGenerated) setBtId(''); setPiecesList([]); setCurrentCat(''); setCurrentServices([]); setCurrentDesignation(''); };
+    const getPiecesSummary = (pieces) => {
+        if (!pieces) return '';
+        const counts = pieces.reduce((acc, p) => { acc[p.categoryName] = (acc[p.categoryName] || 0) + p.quantity; return acc; }, {});
+        return Object.entries(counts).map(([name, count]) => `${count}x ${name}`).join(' ');
+    };
+
+    return (
+      <div className="flex flex-col md:flex-row gap-6 h-[calc(100vh-120px)]">
+        {receptionPrintData && (
+            <div className="hidden print:block fixed inset-0 bg-white z-[9999] p-0 m-0">
+                <style>{`@import url('https://fonts.googleapis.com/css2?family=Libre+Barcode+39+Text&display=swap'); @media print { @page { size: 80mm auto; margin: 0; } body { margin: 0; padding: 0; } .ticket { page-break-after: always; padding: 5mm; width: 80mm; border-bottom: 2px dashed black; } }`}</style>
+                {receptionPrintData.pieces && receptionPrintData.pieces.flatMap(p => Array(p.labelCount || 1).fill(p).map((_, labelIndex) => ({...p, labelIndex, totalLabels: p.labelCount || 1}))).map((piece, i, arr) => (
+                    <div key={i} className="ticket text-center font-sans">
+                        <div className="text-sm font-black mb-1 truncate">{companyInfo.name}</div>
+                        <div className="text-lg mb-1 font-black uppercase">{clients.find(c=>c.id===receptionPrintData.clientId)?.name}</div>
+                        <div className="text-3xl font-black mb-1">BT: {receptionPrintData.id}</div>
+                        <div className="text-base font-black mb-1 border-b-2 border-black pb-1">(Total: {receptionPrintData.pieces.reduce((acc,p)=>acc+p.quantity,0)} pces)</div>
+                        <div className="text-sm font-bold mb-1 border-2 border-black rounded px-2 inline-block bg-gray-100">Ticket {i + 1} / {arr.length}</div>
+                        <div className="font-black text-xl border-t-2 border-black mt-2 pt-1 uppercase leading-none">{getPiecesSummary(receptionPrintData.pieces)}</div>
+                        <div className="text-base italic mb-2 font-bold">{piece.designation}</div>
+                        <ul className="text-left text-lg border-b-2 border-black pb-2 mb-2 font-black leading-tight">
+                            {groupServices(piece.services, true).map((s, idx) => (
+                                <li key={idx}>• {s}</li>
+                            ))}
+                        </ul>
+                        <div className="text-5xl my-1" style={{ fontFamily: '"Libre Barcode 39 Text", cursive' }}>{`*${receptionPrintData.id}*`}</div>
+                        <div className="text-xl font-bold mt-1">Prévu le : {formatDate(receptionPrintData.scheduledDeliveryDate)}</div>
+                    </div>
+                ))}
+            </div>
+        )}
+        <div className="w-full md:w-2/3 flex flex-col gap-6 overflow-y-auto">
+            <Card title="1. Configuration du Bon (Auto-Focus)">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="md:col-span-2">
+                        <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Magasin (Reste actif)</label>
+                        <div className="flex gap-2">
+                             <select className="w-full border-2 border-blue-100 p-2 rounded font-bold text-blue-900" value={selectedClient} onChange={e => setSelectedClient(e.target.value)}>
+                                <option value="">-- Choisir --</option>
+                                {clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                            </select>
+                            {selectedClient && <Button variant="ghost" onClick={() => {setSelectedClient(''); localStorage.removeItem('lastSelectedClient')}} title="Changer"><RefreshCcw size={16}/></Button>}
+                        </div>
+                    </div>
+                    <div className="md:col-span-2">
+                        <label className="block text-xs font-bold text-blue-600 uppercase mb-1">Référence BT (Obligatoire)</label>
+                        <input ref={btIdInputRef} autoFocus={!isAutoGenerated} readOnly={isAutoGenerated} className={`w-full border-2 p-3 rounded text-xl font-mono font-bold text-center outline-none ${isAutoGenerated ? 'bg-gray-100 border-gray-300 text-gray-500' : 'border-blue-400 focus:ring-4 focus:ring-blue-200'}`} placeholder={isAutoGenerated ? "Génération Auto..." : "Scannez l'étiquette ici..."} value={btId} onChange={e => setBtId(e.target.value.toUpperCase())} onKeyDown={e => e.key === 'Enter' && startReception()} />
+                         {isAutoGenerated && <div className="text-xs text-center text-gray-400 mt-1 italic">Numéro généré automatiquement pour ce client</div>}
+                    </div>
+                </div>
+            </Card>
+            <Card title="2. Ajout de Pièce (Appuyez sur Entrée pour Ajouter)">
+                 <div className="space-y-4">
+                    <div className="grid grid-cols-2 gap-4">
+                        <div>
+                            <label className="text-xs font-bold uppercase text-gray-500 block mb-2">Type de Vêtement</label>
+                            <div className="flex flex-wrap gap-2 mb-2">
+                                {categories.map(c => (
+                                    <button
+                                        key={c.id}
+                                        onClick={() => { setCurrentCat(c.id); setCurrentServices([]); }}
+                                        className={`px-4 py-2 rounded text-sm font-medium border transition-all shadow-sm ${currentCat === c.id ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'}`}
+                                    >
+                                        {c.name}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                        <div>
+                            <label className="text-xs font-bold uppercase text-gray-500 block mb-1">Réf Article (Facultatif)</label>
+                            <input ref={refArticleInputRef} className="w-full border p-2 rounded" placeholder="..." value={currentDesignation} onChange={e => setCurrentDesignation(e.target.value)} onKeyDown={e => e.key === 'Enter' && addPieceToCart()} />
+                        </div>
+                    </div>
+                    <div className="bg-gray-50 p-3 rounded border">
+                        <label className="font-bold block mb-2 text-sm">Ajouter Prestations :</label>
+                        <div className="flex flex-wrap gap-2">
+                            {filteredServices.length === 0 && <span className="text-gray-400 text-xs italic">Sélectionnez un type de vêtement.</span>}
+                            {filteredServices.map(s => (<button key={s.id} onClick={() => { addServiceToCurrentPiece(s.id); refArticleInputRef.current?.focus(); }} className="px-4 py-2 bg-white border border-blue-200 rounded hover:bg-blue-50 text-sm font-medium flex items-center gap-1 transition-all active:scale-95 shadow-sm"><Plus size={14} className="text-blue-500"/> {s.name} <span className="text-gray-400 ml-1">{formatPrice(getPrice(selectedClient, s.id))}</span></button>))}
+                            {currentCat && (<button onClick={() => setShowFreeService(true)} className="px-4 py-2 bg-purple-50 border border-purple-200 rounded hover:bg-purple-100 text-sm font-medium flex items-center gap-1 transition-all text-purple-700 shadow-sm"><PenTool size={14}/> Autre / Libre</button>)}
+                        </div>
+                    </div>
+                    {showFreeService && (<div className="bg-purple-50 p-3 rounded border border-purple-200 space-y-2"><h5 className="font-bold text-purple-800 text-sm">Prestation Libre</h5><div className="flex gap-2"><input ref={freeNameRef} className="flex-1 border p-1 rounded text-sm" placeholder="Nom prestation" value={freeServiceName} onChange={e => setFreeServiceName(e.target.value)} /><input className="w-20 border p-1 rounded text-sm" type="number" placeholder="Prix" value={freeServicePrice} onChange={e => setFreeServicePrice(e.target.value)} /></div><input className="w-full border p-1 rounded text-sm" placeholder="Commentaire (Facultatif)" value={freeServiceComment} onChange={e => setFreeServiceComment(e.target.value)} /><div className="flex justify-end gap-2"><Button variant="outline" onClick={() => setShowFreeService(false)}>Annuler</Button><Button onClick={addFreeService}>Ajouter</Button></div></div>)}
+                    {currentServices.length > 0 && (<div className="bg-blue-50 p-3 rounded border border-blue-200"><div className="text-sm mb-2 space-y-2"><div className="font-bold text-blue-900 border-b border-blue-200 pb-1 mb-2">{categories.find(c=>c.id===currentCat)?.name} en cours...</div>{currentServices.map((s, idx) => (<div key={idx} className="flex items-center gap-2 bg-white p-2 rounded border border-blue-100"><span className="text-blue-800 font-medium whitespace-nowrap">{s.name}</span><input autoFocus={idx === currentServices.length - 1} className="flex-1 border-b border-gray-300 text-xs p-1 focus:outline-none focus:border-blue-500 bg-transparent" placeholder="Ajouter un commentaire..." value={s.comment || ''} onChange={(e) => updateCurrentServiceComment(idx, e.target.value)} onKeyDown={e => e.key === 'Enter' && addPieceToCart()}/><button onClick={() => setCurrentServices(currentServices.filter((_, i) => i !== idx))} className="text-red-400 hover:text-red-600"><X size={14}/></button></div>))}</div><div className="flex justify-between items-center border-t border-blue-200 pt-2 mt-2"><div className="flex items-center gap-2"><label className="text-xs font-bold text-blue-900">Nb. Étiquettes / Pièce :</label><input type="number" min="1" max="5" className="w-12 border p-1 rounded text-center text-sm font-bold" value={labelCount} onChange={e => setLabelCount(parseInt(e.target.value) || 1)} /><span className="text-[10px] text-blue-400">(ex: Costume = 2)</span></div><Button onClick={addPieceToCart} size="sm"><ListPlus size={16}/> Ajouter</Button></div></div>)}
+                 </div>
+            </Card>
+        </div>
+        <div className="w-full md:w-1/3 h-full">
+            <Card title={`Panier du Bon ${btId || '...'}`} className="h-full flex flex-col">
+                <div className="flex-1 overflow-y-auto space-y-2 mb-4 bg-gray-50 p-2 rounded border-inner h-0 min-h-[300px]">
+                    {piecesList.length === 0 && <div className="text-center text-gray-400 mt-10 italic">Aucune pièce saisie</div>}
+                    {piecesList.map((p, idx) => (
+                        <div key={idx} className="bg-white border rounded p-2 text-sm shadow-sm relative pr-8">
+                            <div className="flex justify-between font-bold"><span>{p.categoryName} {p.labelCount > 1 && <span className="text-xs text-orange-500 font-normal">({p.labelCount} tickets)</span>}</span><span className="bg-blue-100 text-blue-800 px-1.5 rounded text-xs">x{p.quantity}</span></div><div className="text-xs text-gray-500">{p.designation}</div>
+                            {/* AFFICHAGE PANIER : SANS COMMENTAIRES (FALSE) */}
+                            <div className="text-xs mt-1 text-gray-600">{groupServices(p.services, false).join(', ')}</div>
+                            <button onClick={() => setPiecesList(piecesList.filter((_, i) => i !== idx))} className="absolute top-2 right-2 text-red-300 hover:text-red-500"><Trash2 size={14}/></button>
+                        </div>
+                    ))}
+                </div>
+                <div className="pt-2 border-t space-y-2">
+                    <div className="mb-2 bg-blue-50 p-2 rounded border border-blue-100">
+                        <label className="block text-xs font-bold text-blue-800 uppercase mb-1 text-center">Date de Livraison Prévue (Auto)</label>
+                        <input type="date" className="w-full border-2 border-blue-200 p-2 rounded font-bold text-gray-800 text-center cursor-pointer hover:bg-blue-50 focus:bg-white transition-colors" value={deliveryDate} onChange={e => setDeliveryDate(e.target.value)} required />
+                    </div>
+                    <Button onClick={finalizeBT} className="w-full py-3 text-lg font-bold"><Save size={20}/> VALIDER (Ctrl+Entrée)</Button>
+                    <button onClick={resetForm} className="text-xs text-gray-400 hover:text-red-500 underline w-full text-center">Annuler / Tout effacer</button>
+                </div>
+            </Card>
+        </div>
+      </div>
+    );
+  };
+
+  // 2. ATELIER (FILTRES COMPLETS)
+  const WorkshopModule = () => {
+    const [filters, setFilters] = useState({ 
+        query: '', 
+        client: '', 
+        status: 'ATELIER', 
+        start: localStorage.getItem('workshop_start') || '', 
+        end: localStorage.getItem('workshop_end') || '' 
+    });
+    const [printData, setPrintData] = useState(null);
+    const [scanInput, setScanInput] = useState('');
+    const scanRef = useRef(null);
+
+    useEffect(() => {
+        localStorage.setItem('workshop_start', filters.start);
+        localStorage.setItem('workshop_end', filters.end);
+    }, [filters.start, filters.end]);
+
+    const handlePrint = (bt) => { setPrintData(bt); setTimeout(() => window.print(), 500); };
+    const getPiecesSummary = (pieces) => { if (!pieces) return ''; const counts = pieces.reduce((acc, p) => { acc[p.categoryName] = (acc[p.categoryName] || 0) + p.quantity; return acc; }, {}); return Object.entries(counts).map(([name, count]) => `${count}x ${name}`).join(' '); };
+    
+    // Logique de validation d'un scan (extraite pour être utilisée par le Timer et Enter)
+    const validateScan = (code) => {
+        const rawId = code.trim().toUpperCase().replace(/\*/g, '');
+        if (!rawId) return;
+        setScanInput(''); // Clear input immediately
+        
+        const bt = workOrders.find(b => b.id === rawId);
+        if (!bt) {
+            showToast("BT introuvable", 'error');
+            playScanSound(false);
+        } else if (bt.status !== 'ATELIER') {
+            showToast(`Déjà traité (${bt.status})`, 'warning');
+            playScanSound(false);
+        } else {
+            setWorkOrders(prev => prev.map(b => b.id === rawId ? {...b, status: 'A_LIVRER'} : b));
+            showToast(`BT ${rawId} marqué PRÊT !`);
+            playScanSound(true);
+        }
+    };
+
+    const handleScanComplete = (e) => { 
+        if (e.key === 'Enter') { 
+            validateScan(scanInput);
+        } 
+    };
+
+    // Ajout d'un effet pour valider automatiquement si le scanner n'envoie pas "Entrée"
+    useEffect(() => {
+        const timer = setTimeout(() => {
+            if (scanInput.length >= 3) { // Longueur min pour éviter déclenchement sur 1 char
+                validateScan(scanInput);
+            }
+        }, 100); // 100ms
+        return () => clearTimeout(timer);
+    }, [scanInput]);
+
+    const markAsReady = (btId) => { setWorkOrders(prev => prev.map(bt => bt.id === btId ? { ...bt, status: 'A_LIVRER' } : bt)); showToast("Ticket prêt !"); };
+    
+    const filteredBTs = useMemo(() => {
+        return workOrders.filter(bt => {
+            if (filters.status && bt.status !== filters.status) return false;
+            if (filters.client && bt.clientId !== filters.client) return false;
+            if (filters.start && bt.scheduledDeliveryDate < filters.start) return false;
+            if (filters.end && bt.scheduledDeliveryDate > filters.end) return false;
+            const search = filters.query.toLowerCase();
+            if (search) { 
+                const clientName = clients.find(c => c.id === bt.clientId)?.name.toLowerCase() || ''; 
+                const piecesContent = bt.pieces ? bt.pieces.map(p => `${p.categoryName} ${p.designation} ${p.services.map(s=>s.name).join(' ')}`).join(' ').toLowerCase() : (bt.lines ? 'anciennes données' : ''); 
+                return bt.id.toLowerCase().includes(search) || clientName.includes(search) || piecesContent.includes(search); 
+            }
+            return true;
+        }).sort((a,b) => new Date(a.scheduledDeliveryDate || '9999-12-31') - new Date(b.scheduledDeliveryDate || '9999-12-31'));
+    }, [workOrders, filters, clients]);
+
+    const tasksSummary = useMemo(() => {
+        const summary = {};
+        filteredBTs.forEach(bt => {
+            if (bt.pieces) {
+                bt.pieces.forEach(p => {
+                    p.services.forEach(s => {
+                        const qty = p.quantity || 1;
+                        summary[s.name] = (summary[s.name] || 0) + qty;
+                    });
+                });
+            }
+        });
+        return Object.entries(summary).sort((a, b) => b[1] - a[1]);
+    }, [filteredBTs]);
+    
+    const getPiecesSummaryForTicket = (pieces) => { if (!pieces) return ''; const counts = pieces.reduce((acc, p) => { acc[p.categoryName] = (acc[p.categoryName] || 0) + p.quantity; return acc; }, {}); return Object.entries(counts).map(([name, count]) => `${count}x ${name}`).join(' '); };
+    const getUrgencyColor = (dateStr) => { if (!dateStr) return 'bg-gray-100 text-gray-600'; const target = new Date(dateStr); const today = new Date(); today.setHours(0,0,0,0); target.setHours(0,0,0,0); const diff = (target - today) / (1000 * 60 * 60 * 24); if (diff < 0) return 'bg-red-100 text-red-800'; if (diff === 0) return 'bg-purple-100 text-purple-800'; if (diff === 1) return 'bg-orange-100 text-orange-800'; return 'bg-blue-50 text-blue-600'; };
+
+    const keepFocus = () => { if (scanRef.current) scanRef.current.focus(); };
+
+    return (
+      <div className="space-y-4">
+        {printData && (
+            <div className="hidden print:block fixed inset-0 bg-white z-[9999] p-0 m-0">
+                <style>{`@import url('https://fonts.googleapis.com/css2?family=Libre+Barcode+39+Text&display=swap'); @media print { @page { size: 80mm auto; margin: 0; } body { margin: 0; padding: 0; } .ticket { page-break-after: always; padding: 5mm; width: 80mm; border-bottom: 2px dashed black; } }`}</style>
+                {printData.pieces && printData.pieces.flatMap(p => Array(p.labelCount || 1).fill(p).map((_, labelIndex) => ({...p, labelIndex, totalLabels: p.labelCount || 1}))).map((piece, i, arr) => (
+                    <div key={i} className="ticket text-center font-sans">
+                        <div className="text-sm font-black mb-1 truncate">{companyInfo.name}</div>
+                        <div className="text-lg mb-1 font-black uppercase">{clients.find(c=>c.id===printData.clientId)?.name}</div>
+                        <div className="text-3xl font-black mb-1">BT: {printData.id}</div>
+                        <div className="text-base font-black mb-1 border-b-2 border-black pb-1">(Total: {printData.pieces.reduce((acc,p)=>acc+p.quantity,0)} pces)</div>
+                        <div className="text-sm font-bold mb-1 border-2 border-black rounded px-2 inline-block bg-gray-100">Ticket {i + 1} / {arr.length}</div>
+                        <div className="font-black text-xl border-t-2 border-black mt-2 pt-1 uppercase leading-none">{getPiecesSummaryForTicket(printData.pieces)}</div>
+                        <div className="text-base italic mb-2 font-bold">{piece.designation}</div>
+                        <ul className="text-left text-lg border-b-2 border-black pb-2 mb-2 font-black leading-tight">
+                            {/* Affichage du ticket Atelier AVEC commentaires */}
+                            {groupServices(piece.services, true).map((s, idx) => (
+                                <li key={idx}>• {s}</li>
+                            ))}
+                        </ul>
+                        <div className="text-5xl my-1" style={{ fontFamily: '"Libre Barcode 39 Text", cursive' }}>{`*${printData.id}*`}</div>
+                        <div className="text-xl font-bold mt-1">Prévu le : {formatDate(printData.scheduledDeliveryDate)}</div>
+                    </div>
+                ))}
+            </div>
+        )}
+        <div className="bg-white p-4 rounded-lg shadow border border-gray-200 no-print">
+            <div className="flex flex-col gap-4">
+                <div className="grid grid-cols-1 md:grid-cols-5 gap-3 items-end">
+                    <div className="md:col-span-1"><label className="text-xs font-bold text-gray-500 uppercase mb-1">Recherche</label><div className="relative"><Search className="absolute left-2 top-2.5 text-gray-400" size={16}/><input className="w-full pl-8 p-2 border rounded text-sm" placeholder="BT, Pièce, Réf..." value={filters.query} onChange={e => setFilters({...filters, query: e.target.value})} /></div></div>
+                    <div><label className="text-xs font-bold text-gray-500 uppercase mb-1">Client</label><select className="w-full border p-2 rounded text-sm" value={filters.client} onChange={e => setFilters({...filters, client: e.target.value})}><option value="">Tous</option>{clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></div>
+                    {/* MODIFICATION: Suppression de 'Tous', verrouillage sur 'ATELIER' */}
+                    <div>
+                        <label className="text-xs font-bold text-gray-500 uppercase mb-1">Statut</label>
+                        <select className="w-full border p-2 rounded text-sm font-bold text-blue-800 bg-blue-50" value={filters.status} disabled>
+                            <option value="ATELIER">ATELIER</option>
+                        </select>
+                    </div>
+                    <div><label className="text-xs font-bold text-gray-500 uppercase mb-1">Du</label><input type="date" className="w-full border p-2 rounded text-sm" value={filters.start} onChange={e => setFilters({...filters, start: e.target.value})} /></div>
+                    <div><label className="text-xs font-bold text-gray-500 uppercase mb-1">Au</label><input type="date" className="w-full border p-2 rounded text-sm" value={filters.end} onChange={e => setFilters({...filters, end: e.target.value})} /></div>
+                </div>
+                {/* COMPTEUR DE PRESTATIONS TOTALES */}
+                <div className="border-t pt-3 mt-1">
+                    <h4 className="text-xs font-bold text-gray-500 uppercase mb-2 flex items-center gap-2"><Layers size={14}/> Total des prestations à faire (Liste affichée)</h4>
+                    <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-thin">
+                        {tasksSummary.map(([name, count]) => (
+                            <span key={name} className="whitespace-nowrap px-3 py-1 bg-blue-100 text-blue-800 rounded-full text-xs font-bold border border-blue-200 shadow-sm flex items-center gap-1">
+                                <span className="bg-white px-1.5 rounded-full text-[10px] text-blue-900">{count}</span> {name}
+                            </span>
+                        ))}
+                        {tasksSummary.length === 0 && <span className="text-gray-400 text-xs italic">Aucune tâche en cours</span>}
+                    </div>
+                </div>
+                <div className="border-t pt-3 mt-1 flex items-center gap-4 bg-purple-50 p-3 rounded"><ScanBarcode className="text-purple-600" size={24}/><div className="flex-1"><label className="block text-xs font-bold text-purple-700 uppercase mb-1">Scanner de Sortie Atelier (Passage en "A LIVRER")</label><input ref={scanRef} autoFocus onBlur={keepFocus} className="w-full border-2 border-purple-300 rounded p-2 text-lg font-mono font-bold focus:ring-2 focus:ring-purple-200 outline-none" placeholder="Scan de FIN..." value={scanInput} onChange={e => setScanInput(e.target.value)} onKeyDown={handleScanComplete} /></div></div>
+            </div>
+        </div>
+        <div className="overflow-x-auto bg-white rounded-lg shadow border">
+            {/* MODIFICATION: Colonne Urgence déplacée à la fin */}
+            <table className="w-full text-sm text-left"><thead className="bg-gray-100 text-gray-600 uppercase text-xs"><tr><th className="p-3">Réception</th><th className="p-3">BT</th><th className="p-3">Client</th><th className="p-3">Contenu Détaillé</th><th className="p-3 text-right">Actions</th><th className="p-3">Urgence</th></tr></thead><tbody className="divide-y">{filteredBTs.map(bt => (<tr key={bt.id} className="hover:bg-gray-50"><td className="p-3 text-gray-500">{formatDate(bt.dateCreated)}</td><td className="p-3 font-mono font-bold text-blue-600">{bt.id}</td><td className="p-3 font-medium">{clients.find(c=>c.id===bt.clientId)?.name}</td><td className="p-3">{bt.pieces ? bt.pieces.map((p, i) => (
+                <div key={i} className="mb-3 border-l-4 border-blue-100 pl-2">
+                    <div className="font-bold text-gray-800">{p.quantity}x {p.categoryName} <span className="text-gray-400 font-normal text-[10px]">({p.designation})</span></div>
+                    {/* Affichage liste atelier : SANS commentaires (False) */}
+                    <ul className="text-xs text-blue-700 mt-1 space-y-0.5">
+                        {groupServices(p.services, false).map((s, j) => (
+                            <li key={j} className="flex items-start gap-1">
+                                <span className="text-blue-400">•</span> 
+                                <span>{s}</span>
+                            </li>
+                        ))}
+                    </ul>
+                </div>
+            )) : <span className="text-red-400 italic">Données anciennes</span>}</td><td className="p-3 text-right flex justify-end gap-2"><Button variant="ghost" onClick={() => openEditModal(bt)} title="Modifier"><Edit2 size={19}/></Button><Button variant="ghost" className="text-red-400" onClick={(e) => {e.stopPropagation(); deleteBT(bt.id)}}><Trash2 size={19}/></Button><Button variant="outline" onClick={() => handlePrint(bt)}><Printer size={19}/></Button><Button variant="primary" onClick={() => markAsReady(bt.id)}><PackageCheck size={19}/></Button></td><td className="p-3"><span className={`px-2 py-1 rounded text-xs font-bold ${getUrgencyColor(bt.scheduledDeliveryDate)}`}>{formatDate(bt.scheduledDeliveryDate)}</span></td></tr>))}{filteredBTs.length === 0 && (<tr><td colSpan="6" className="p-8 text-center text-gray-400 italic">Aucune pièce ne correspond aux filtres.</td></tr>)}</tbody></table>
+        </div>
+      </div>
+    );
+  };
+
+  // 3. LIVRAISONS
+  const DeliveryModule = () => {
+      const [deliveryClient, setDeliveryClient] = useState(() => localStorage.getItem('lastDeliveryClient') || '');
+      const [scanInput, setScanInput] = useState('');
+      const scanRef = useRef(null);
+      const [printBLData, setPrintBLData] = useState(null);
+      // MODIFICATION : Remplacement de searchDate unique par start/end
+      const [deliveryStart, setDeliveryStart] = useState(getTodayDate());
+      const [deliveryEnd, setDeliveryEnd] = useState(getTodayDate());
+      const [deliverySubTab, setDeliverySubTab] = useState('planning'); // 'planning' or 'bl' or 'history'
+      // NOUVEL ÉTAT POUR L'EXPANSION DES LIGNES
+      const [expandedBLs, setExpandedBLs] = useState(new Set());
+
+      useEffect(() => { localStorage.setItem('lastDeliveryClient', deliveryClient); if(scanRef.current) { scanRef.current.focus(); } }, [deliveryClient, workOrders]); 
+
+      // Historique des BL (Regroupement)
+      const blHistory = useMemo(() => {
+          const history = {};
+          workOrders.forEach(bt => {
+              if (bt.blNumber && bt.status === 'LIVRE' && (deliveryClient ? bt.clientId === deliveryClient : true)) {
+                  if (!history[bt.blNumber]) {
+                      history[bt.blNumber] = {
+                          blNumber: bt.blNumber,
+                          date: bt.dateDelivered,
+                          clientId: bt.clientId,
+                          clientName: clients.find(c => c.id === bt.clientId)?.name,
+                          items: [],
+                          totalAmount: 0 // Initialisation du total
+                      };
+                  }
+                  history[bt.blNumber].items.push(bt);
+                  
+                  // CALCUL DU MONTANT DU BT ET AJOUT AU TOTAL BL
+                  const btTotal = bt.pieces ? bt.pieces.reduce((accP, p) => accP + p.quantity * p.services.reduce((accS, s) => accS + s.price, 0), 0) : 0;
+                  history[bt.blNumber].totalAmount += btTotal;
+              }
+          });
+          return Object.values(history).sort((a, b) => new Date(b.date) - new Date(a.date));
+      }, [workOrders, clients, deliveryClient]);
+
+      const displayedItems = useMemo(() => {
+          if (!deliveryClient && deliverySubTab !== 'history') { // Mode TOTAL Planning
+               return workOrders.filter(bt => {
+                  // MODIFICATION : Filtre de date sur une plage
+                  const isScheduledInRange = bt.scheduledDeliveryDate >= deliveryStart && bt.scheduledDeliveryDate <= deliveryEnd;
+                  const isNotSent = bt.status !== 'LIVRE' && bt.status !== 'FACTURE' && bt.status !== 'AVOIR' && bt.status !== 'BL_EN_COURS';
+                  return isScheduledInRange && isNotSent;
+              }).sort((a, b) => { if (a.scheduledDeliveryDate !== b.scheduledDeliveryDate) return new Date(a.scheduledDeliveryDate) - new Date(b.scheduledDeliveryDate); const clientA = clients.find(c => c.id === a.clientId)?.name || ''; const clientB = clients.find(c => c.id === b.clientId)?.name || ''; return clientA.localeCompare(clientB); });
+          } else {
+              if (deliverySubTab === 'planning') {
+                  // PLANNING MAGASIN
+                  return workOrders.filter(bt => {
+                      const isScheduledInRange = bt.scheduledDeliveryDate >= deliveryStart && bt.scheduledDeliveryDate <= deliveryEnd;
+                      const isClient = bt.clientId === deliveryClient;
+                      const isNotDelivered = !['LIVRE', 'FACTURE', 'AVOIR', 'BL_EN_COURS'].includes(bt.status);
+                      return isClient && isScheduledInRange && isNotDelivered;
+                  }).sort((a,b) => new Date(a.scheduledDeliveryDate) - new Date(b.scheduledDeliveryDate));
+              } else if (deliverySubTab === 'bl') {
+                  // BL MAGASIN (Scan du jour)
+                  return workOrders.filter(bt => 
+                      (deliveryClient ? bt.clientId === deliveryClient : true) && 
+                      (bt.status === 'LIVRE' || bt.status === 'BL_EN_COURS') && 
+                      bt.dateDelivered && 
+                      // MODIFICATION : Filtre de date de livraison sur une plage
+                      bt.dateDelivered.slice(0, 10) >= deliveryStart && bt.dateDelivered.slice(0, 10) <= deliveryEnd
+                  ).sort((a,b) => new Date(b.dateDelivered) - new Date(a.dateDelivered)); 
+              }
+              return [];
+          }
+      }, [workOrders, deliveryClient, clients, deliveryStart, deliveryEnd, deliverySubTab]);
+
+      const totalPieces = useMemo(() => { return displayedItems.reduce((acc, bt) => acc + (bt.pieces ? bt.pieces.reduce((s,p)=>s+p.quantity,0) : 0), 0); }, [displayedItems]);
+
+      const getUrgencyStatus = (dateStr) => { if (!dateStr) return { color: 'bg-gray-100 text-gray-600', label: '-' }; const target = new Date(dateStr); const current = new Date(getTodayDate()); target.setHours(0,0,0,0); current.setHours(0,0,0,0); const diff = (target - current) / (1000 * 60 * 60 * 24); if (diff < 0) return { color: 'bg-red-100 text-red-800 font-bold', label: 'RETARD' }; if (diff === 0) return { color: 'bg-green-100 text-green-800 font-bold', label: 'AUJOURD\'HUI' }; return { color: 'bg-blue-50 text-blue-600', label: 'Futur' }; };
+
+      // Logique de validation du scan (extraite pour usage multiple)
+      const validateScan = (code) => {
+          const rawId = code.trim().toUpperCase().replace(/\*/g, '');
+          if (!rawId) return;
+          setScanInput(''); // Clear input
+          
+          const bt = workOrders.find(b => b.id === rawId);
+          if (!bt) { 
+              showToast(`BT ${rawId} introuvable`, 'error'); 
+              playScanSound(false); 
+              return; 
+          } 
+          if (deliveryClient && bt.clientId !== deliveryClient) { 
+              const owner = clients.find(c => c.id === bt.clientId)?.name || 'Inconnu'; 
+              showToast(`ERREUR MAGASIN ! Ce BT appartient à ${owner}`, 'error'); 
+              playScanSound(false); 
+              return; 
+          } 
+          const today = getTodayDate(); 
+          if ((bt.status === 'BL_EN_COURS' || bt.status === 'LIVRE') && bt.dateDelivered && bt.dateDelivered.startsWith(today)) { 
+              showToast(`BT ${rawId} déjà scanné aujourd'hui.`, 'warning'); 
+              playScanSound(false); 
+              return; 
+          } 
+          const now = new Date().toISOString(); 
+          setWorkOrders(prev => prev.map(b => b.id === rawId ? { ...b, status: 'BL_EN_COURS', dateDelivered: now } : b)); 
+          const clientName = clients.find(c => c.id === bt.clientId)?.name || 'Client inconnu'; 
+          showToast(deliveryClient ? `Sortie validée : ${rawId}` : `Sortie validée pour ${clientName}`, 'success'); 
+          playScanSound(true);
+      };
+
+      const handleScan = (e) => { 
+          if (e.key === 'Enter') { 
+              validateScan(scanInput);
+          } 
+      };
+
+      // Ajout : Validation automatique après 100ms sans frappe (pour les douchettes sans "Enter")
+      useEffect(() => {
+          const timer = setTimeout(() => {
+              if (scanInput.length >= 3) { // Seuil minimal pour éviter les faux positifs sur 1-2 caractères
+                  validateScan(scanInput);
+              }
+          }, 100); 
+          return () => clearTimeout(timer);
+      }, [scanInput]);
+
+      const cancelDelivery = (btId) => { if (window.confirm(`Retirer le BT ${btId} du Bon de Livraison et le remettre en 'À LIVRER' ?`)) { setWorkOrders(prev => prev.map(b => b.id === btId ? { ...b, status: 'A_LIVRER', dateDelivered: null } : b)); showToast("BT retiré du BL (Retour Atelier)"); } };
+      
+      const handlePrintBL = (itemsToPrint = displayedItems, dateToPrint = deliveryEnd, blNum = null) => {
+          if (itemsToPrint.length === 0) return showToast("Rien à imprimer", 'error');
+          const clientName = deliveryClient ? clients.find(c => c.id === deliveryClient)?.name : "PLANNING LIVRAISON DU JOUR";
+          
+          let generatedBlNumber = blNum;
+          if (!generatedBlNumber) {
+             const currentYear = new Date().getFullYear();
+             generatedBlNumber = deliveryClient ? `BL${currentYear}-${blCounter.toString().padStart(4, '0')}` : "PROVISOIRE";
+          }
+
+          setPrintBLData({ items: itemsToPrint, date: new Date(dateToPrint).toLocaleDateString(), clientName, blNumber: generatedBlNumber, isSpecificClient: !!deliveryClient && !!blNum });
+          
+          setTimeout(() => {
+              window.print();
+              // Validation seulement si c'est un nouveau BL (pas historique) et qu'on a un client sélectionné
+              if (deliveryClient && !blNum && deliverySubTab === 'bl') {
+                  if(window.confirm(`Confirmer la sortie de stock pour le ${generatedBlNumber} ? (Passage en Historique)`)) {
+                      const ids = itemsToPrint.map(i => i.id);
+                      setWorkOrders(prev => prev.map(bt => ids.includes(bt.id) ? {...bt, status: 'LIVRE', blNumber: generatedBlNumber} : bt));
+                      setBlCounter(prev => prev + 1);
+                      showToast(`BL ${generatedBlNumber} Validé !`);
+                  }
+              }
+          }, 500);
+      };
+
+      // MODIFICATION : Fonction pour forcer le focus sur le champ de scan
+      const keepFocus = () => {
+          if (scanRef.current) {
+              scanRef.current.focus();
+          }
+      };
+
+      // FONCTION POUR OUVRIR/FERMER LES DÉTAILS BL
+      const toggleBL = (blNumber) => {
+          const newSet = new Set(expandedBLs);
+          if (newSet.has(blNumber)) newSet.delete(blNumber);
+          else newSet.add(blNumber);
+          setExpandedBLs(newSet);
+      };
+
+      return (
+          <div className="flex flex-col gap-6 h-[calc(100vh-120px)]">
+              {printBLData && ( <div className="hidden print:block fixed inset-0 bg-white z-[9999] p-4 font-sans text-sm"><style>{`@media print { @page { size: A4; margin: 10mm; } }`}</style><div className="flex justify-between items-start border-b-2 border-black pb-2 mb-4"><div className="w-1/2"><h1 className="text-2xl font-bold uppercase">{companyInfo.name}</h1><div className="text-xs whitespace-pre-line">{companyInfo.address}</div></div><div className="w-1/2 text-right"><h2 className="text-xl font-bold">{deliveryClient ? `BON DE LIVRAISON N° ${printBLData.blNumber}` : "PLANNING LIVRAISON"}</h2><div className="text-sm">Date : <b>{printBLData.date}</b></div><div className="text-sm mt-1">Pour : <b>{printBLData.clientName}</b></div></div></div><table className="w-full border-collapse border border-black text-xs"><thead className="bg-gray-200"><tr><th className="border border-black p-1 w-16 text-center">BT</th><th className="border border-black p-1 w-12 text-center">Qté</th><th className="border border-black p-1">{deliveryClient ? 'Description' : 'Client & Description'}</th>{!deliveryClient && <th className="border border-black p-1 w-20 text-center">Statut</th>}</tr></thead><tbody>{printBLData.items.map((bt, i) => (<tr key={i}><td className="border border-black p-1 text-center font-bold">{bt.id}</td><td className="border border-black p-1 text-center">{bt.pieces ? bt.pieces.reduce((acc,p)=>acc+p.quantity,0) : 1}</td><td className="border border-black p-1">{!deliveryClient && <span className="font-bold text-gray-700 block text-[10px]">{clients.find(c => c.id === bt.clientId)?.name} : </span>}{bt.pieces ? bt.pieces.map(p => (
+                  <span key={p.categoryName} className="mr-2">
+                      <span className="font-bold">{p.quantity}x {p.categoryName}</span>
+                      <span className="italic text-[10px]"> ({p.designation})</span>
+                      {/* Affichage INLINE des prestations pour économiser la hauteur - CORRECTION ICI: SPAN au lieu de DIV */}
+                      <span className="text-[10px] text-gray-600"> : {groupServices(p.services, false).join(', ')}</span>
+                  </span>
+              )) : '...'}</td>{!deliveryClient && <td className="border border-black p-1 text-center">{bt.status}</td>}</tr>))}</tbody></table><div className="mt-4 text-right text-xl font-bold">Total Pièces : {printBLData.items.reduce((acc, bt) => acc + (bt.pieces ? bt.pieces.reduce((s,p)=>s+p.quantity,0) : 0), 0)}</div></div>)}
+              
+              <Card title="Menu de Sortie Atelier (Livraisons)">
+                  <div className="flex flex-col md:flex-row gap-4 items-end">
+                      {/* MODIFICATION : Remplacement de la date unique par deux champs (Range) */}
+                      <div className="w-full md:w-1/4 grid grid-cols-2 gap-2">
+                          <div><label className="block text-xs font-bold text-gray-500 uppercase mb-1">Du</label><input type="date" className="w-full border-2 border-gray-300 p-2 rounded font-bold text-sm" value={deliveryStart} onChange={e => setDeliveryStart(e.target.value)} /></div>
+                          <div><label className="block text-xs font-bold text-gray-500 uppercase mb-1">Au</label><input type="date" className="w-full border-2 border-gray-300 p-2 rounded font-bold text-sm" value={deliveryEnd} onChange={e => setDeliveryEnd(e.target.value)} /></div>
+                      </div>
+                      <div className="w-full md:w-1/3"><label className="block text-xs font-bold text-gray-500 uppercase mb-1">2. Filtre Magasin</label><div className="flex gap-2"><select className={`w-full border-2 p-3 rounded font-bold text-lg ${deliveryClient ? 'border-blue-100 text-blue-900 bg-white' : 'border-gray-300 text-gray-800 bg-gray-50'}`} value={deliveryClient} onChange={e => setDeliveryClient(e.target.value)}><option value="">TOTAL (Planning Global)</option>{clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select>{deliveryClient && <Button variant="ghost" onClick={() => {setDeliveryClient(''); localStorage.removeItem('lastDeliveryClient')}} title="Voir Total"><RefreshCcw size={20}/></Button>}</div></div>
+                      {/* MODIFICATION: Ajout de onBlur={keepFocus} pour garder le focus et permettre le scan automatique */}
+                      <div className="flex-1 w-full relative"><label className="block text-xs font-bold text-purple-600 uppercase mb-1">3. Scan Sortie (Validation Directe)</label><ScanBarcode className="absolute left-3 top-9 text-purple-400" size={24}/><input ref={scanRef} autoFocus onBlur={keepFocus} className="w-full pl-12 p-3 border-2 border-purple-300 rounded text-xl font-mono font-bold focus:ring-4 focus:ring-purple-200 outline-none" placeholder={deliveryClient ? "Bippez le ticket..." : "Mode TOTAL : Bippez n'importe quel ticket"} value={scanInput} onChange={e => setScanInput(e.target.value)} onKeyDown={handleScan}/></div>
+                  </div>
+              </Card>
+              
+              <div className="flex gap-2 border-b border-gray-200 pb-1">
+                  <button onClick={() => setDeliverySubTab('planning')} className={`px-6 py-2 rounded-t-lg font-bold text-sm transition-colors ${deliverySubTab === 'planning' ? 'bg-white border-x border-t border-gray-200 text-blue-600' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}><ClipboardList size={16} className="inline mr-2"/> Planning (À Préparer)</button>
+                  <button onClick={() => setDeliverySubTab('bl')} className={`px-6 py-2 rounded-t-lg font-bold text-sm transition-colors ${deliverySubTab === 'bl' ? 'bg-white border-x border-t border-gray-200 text-green-600' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}><Truck size={16} className="inline mr-2"/> BL en cours (Scannés)</button>
+                  {/* NOUVEAU ONGLET HISTORIQUE */}
+                  <button onClick={() => setDeliverySubTab('history')} className={`px-6 py-2 rounded-t-lg font-bold text-sm transition-colors ${deliverySubTab === 'history' ? 'bg-white border-x border-t border-gray-200 text-orange-600' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}><History size={16} className="inline mr-2"/> Historique BL livrés</button>
+              </div>
+
+              <div className="flex-1 overflow-hidden flex flex-col">
+                  {deliverySubTab === 'history' ? (
+                      <div className="bg-white rounded-lg shadow-sm border border-gray-200 flex flex-col h-full">
+                           <div className="px-6 py-4 border-b bg-gray-50 flex justify-between items-center"><h3 className="font-bold text-gray-700 flex items-center gap-2"><History size={20} className="text-orange-600"/> Historique des BL Validés {deliveryClient ? `pour ${clients.find(c => c.id === deliveryClient)?.name}` : '(Tous)'}</h3></div>
+                           <div className="flex-1 overflow-y-auto">
+                               {blHistory.length === 0 ? <p className="p-8 text-center text-gray-400 italic">Aucun BL archivé.</p> : 
+                               <table className="w-full text-sm text-left">
+                                   <thead className="bg-gray-50 text-gray-500 sticky top-0"><tr><th className="p-3 w-8"></th><th className="p-3">Date</th><th className="p-3">N° BL</th><th className="p-3">Magasin</th><th className="p-3 text-center">Nb BT</th><th className="p-3 text-right">CA Total</th><th className="p-3 text-right">Actions</th></tr></thead>
+                                   <tbody className="divide-y">{blHistory.map((bl, i) => (
+                                       <React.Fragment key={bl.blNumber}>
+                                           <tr className="hover:bg-orange-50 cursor-pointer transition-colors" onClick={() => toggleBL(bl.blNumber)}>
+                                                <td className="p-3 text-gray-400">{expandedBLs.has(bl.blNumber) ? <ChevronDown size={16}/> : <ChevronRight size={16}/>}</td>
+                                                <td className="p-3">{formatDate(bl.date)}</td>
+                                                <td className="p-3 font-bold font-mono">{bl.blNumber}</td>
+                                                <td className="p-3">{bl.clientName}</td>
+                                                <td className="p-3 text-center"><span className="bg-orange-100 text-orange-800 px-2 py-1 rounded-full text-xs font-bold">{bl.items.length}</span></td>
+                                                <td className="p-3 text-right font-bold text-blue-600">{formatPrice(bl.totalAmount)}</td>
+                                                <td className="p-3 text-right"><Button size="sm" variant="outline" onClick={(e) => { e.stopPropagation(); handlePrintBL(bl.items, bl.date, bl.blNumber); }}><Printer size={14}/> Réimprimer</Button></td>
+                                           </tr>
+                                           {expandedBLs.has(bl.blNumber) && (
+                                               <tr className="bg-gray-50">
+                                                   <td colSpan="7" className="p-0">
+                                                       <div className="p-4 border-y border-gray-200 shadow-inner">
+                                                           <table className="w-full text-xs bg-white rounded border border-gray-200">
+                                                               <thead className="bg-gray-100 text-gray-500">
+                                                                   <tr>
+                                                                       <th className="p-2 text-left">BT</th>
+                                                                       <th className="p-2 text-left">Détail Pièces & Services</th>
+                                                                       <th className="p-2 text-right">Total BT</th>
+                                                                   </tr>
+                                                               </thead>
+                                                               <tbody className="divide-y">
+                                                                   {bl.items.map(bt => {
+                                                                       // Calcul individuel du BT pour affichage
+                                                                       const btTotal = bt.pieces ? bt.pieces.reduce((accP, p) => accP + p.quantity * p.services.reduce((accS, s) => accS + s.price, 0), 0) : 0;
+                                                                       return (
+                                                                           <tr key={bt.id}>
+                                                                               <td className="p-2 font-mono font-bold text-blue-600">{bt.id}</td>
+                                                                               <td className="p-2">
+                                                                                   {bt.pieces.map((p, idx) => (
+                                                                                       <div key={idx} className="mb-1">
+                                                                                           <span className="font-bold">{p.quantity}x {p.categoryName}</span>
+                                                                                           <span className="text-gray-500 ml-1"> - {groupServices(p.services, false).join(', ')}</span>
+                                                                                       </div>
+                                                                                   ))}
+                                                                               </td>
+                                                                               <td className="p-2 text-right font-medium">{formatPrice(btTotal)}</td>
+                                                                           </tr>
+                                                                       );
+                                                                   })}
+                                                               </tbody>
+                                                           </table>
+                                                       </div>
+                                                   </td>
+                                               </tr>
+                                           )}
+                                       </React.Fragment>
+                                   ))}</tbody>
+                               </table>}
+                           </div>
+                      </div>
+                  ) : (
+                      <div className="bg-white rounded-lg shadow-sm border border-gray-200 flex flex-col h-full">
+                          <div className="px-6 py-4 border-b bg-gray-50 flex justify-between items-center"><h3 className="font-bold text-gray-700 flex items-center gap-2"><Truck size={20} className="text-green-600"/> {deliveryClient ? (deliverySubTab === 'bl' ? `BL du ${formatDate(deliveryStart)} au ${formatDate(deliveryEnd)}` : `Planning du ${formatDate(deliveryStart)} au ${formatDate(deliveryEnd)}`) : `PLANNING GLOBAL du ${formatDate(deliveryStart)} au ${formatDate(deliveryEnd)}`} <span className="bg-green-100 text-green-800 px-3 py-1 rounded-full text-sm ml-2 border border-green-200 shadow-sm flex items-center gap-2"><span className="font-bold text-lg">{totalPieces}</span> pièces <span className="text-xs text-green-600">({displayedItems.length} tickets)</span></span></h3><Button onClick={() => handlePrintBL()} variant="secondary" disabled={displayedItems.length === 0}><Printer size={16}/> {deliveryClient && deliverySubTab === 'bl' ? 'Imprimer & Valider BL' : 'Imprimer Liste'}</Button></div>
+                          <div className="flex-1 overflow-y-auto p-0">{displayedItems.length === 0 ? (<div className="h-full flex flex-col items-center justify-center text-gray-300"><Truck size={64} className="mb-4 opacity-20"/><p className="text-lg italic">{deliveryClient ? "Aucun élément dans cette liste." : "Rien de prévu pour cette date."}</p></div>) : (<table className="w-full text-sm text-left"><thead className="bg-gray-50 text-gray-500 sticky top-0"><tr>{(!deliveryClient || deliverySubTab === 'planning') && <th className="p-3 w-24">Urgence</th>}{(deliveryClient && deliverySubTab === 'bl') && <th className="p-3 w-24">Heure</th>}{!deliveryClient && <th className="p-3 w-32">Magasin</th>}<th className="p-3 w-32">Réf BT</th><th className="p-3">Détail Marchandise</th>{!deliveryClient && <th className="p-3 text-right">Statut</th>}<th className="p-3 text-right">Actions</th></tr></thead><tbody className="divide-y">{displayedItems.map(bt => { const urgency = getUrgencyStatus(bt.scheduledDeliveryDate); return (<tr key={bt.id} className="hover:bg-green-50 transition-colors">{(!deliveryClient || deliverySubTab === 'planning') && (<td className="p-3"><span className={`px-2 py-1 rounded text-[10px] uppercase ${urgency.color}`}>{urgency.label} ({formatDate(bt.scheduledDeliveryDate)})</span></td>)}{(deliveryClient && deliverySubTab === 'bl') && (<td className="p-3 text-gray-400 font-mono">{bt.dateDelivered ? new Date(bt.dateDelivered).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : '-'}</td>)}{!deliveryClient && (<td className="p-3 font-bold text-gray-700">{clients.find(c => c.id === bt.clientId)?.name}</td>)}<td className="p-3 font-bold text-blue-600 font-mono">{bt.id}</td><td className="p-3">{bt.pieces ? bt.pieces.map((p, idx) => (
+                              <div key={idx} className="mb-2">
+                                  <div className="font-bold text-gray-800">{p.quantity}x {p.categoryName} <span className="text-gray-400 font-normal text-[10px]">({p.designation})</span></div>
+                                  <div className="text-xs text-blue-600 pl-2">
+                                      {/* AFFICHAGE LISTE LIVRAISON : SANS commentaires (TRUE) */}
+                                      {groupServices(p.services, false).join(', ')}
+                                  </div>
+                              </div>
+                          )) : 'Anciennes données'}</td>{!deliveryClient && (<td className="p-3 text-right"><span className={`px-2 py-1 rounded text-xs font-bold ${bt.status === 'LIVRE' || bt.status === 'BL_EN_COURS' ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'}`}>{bt.status === 'BL_EN_COURS' ? 'EN BL' : bt.status}</span></td>)}<td className="p-3 text-right flex justify-end gap-2"><Button variant="ghost" onClick={() => openEditModal(bt)} title="Modifier Contenu" className="text-blue-400 hover:text-blue-600"><Edit2 size={16}/></Button>
+                          {/* BOUTON D'AJOUT RAPIDE AU BL */}
+                          {bt.status !== 'BL_EN_COURS' && bt.status !== 'LIVRE' && (
+                              <Button variant="ghost" onClick={() => validateScan(bt.id)} title="Valider Sortie (Manuel)" className="text-green-600 hover:text-green-800 hover:bg-green-50"><CheckCircle size={16}/></Button>
+                          )}
+                          {(bt.status === 'BL_EN_COURS' || (deliveryClient && bt.status === 'LIVRE')) && (<Button variant="ghost" onClick={() => cancelDelivery(bt.id)} title="Annuler Scan" className="text-red-400 hover:text-red-600 hover:bg-red-50"><RotateCcw size={16}/></Button>)}</td></tr>)})}</tbody></table>)}</div>
+                      </div>
+                  )}
+              </div>
+          </div>
+      );
+  };
+
+  // 4. HISTORIQUE
+  const HistoryModule = () => {
+    const [filters, setFilters] = useState({ client: '', status: '', start: '', end: '' });
+    const [sortConfig, setSortConfig] = useState({ key: 'dateCreated', direction: 'desc' });
+    const filtered = useMemo(() => workOrders.filter(bt => { const matchClient = filters.client ? bt.clientId === filters.client : true; const matchStatus = filters.status ? bt.status === filters.status : true; const btDate = new Date(bt.dateCreated).toISOString().split('T')[0]; const matchStart = filters.start ? btDate >= filters.start : true; const matchEnd = filters.end ? btDate <= filters.end : true; return matchClient && matchStatus && matchStart && matchEnd; }), [workOrders, filters]);
+    const handleSort = (key) => { let direction = 'asc'; if (sortConfig.key === key && sortConfig.direction === 'asc') direction = 'desc'; setSortConfig({ key, direction }); };
+    const sortedFiltered = useMemo(() => { let items = [...filtered]; if (sortConfig.key) { items.sort((a, b) => { let aVal = a[sortConfig.key]; let bVal = b[sortConfig.key]; if (sortConfig.key === 'clientName') { aVal = clients.find(c => c.id === a.clientId)?.name || ''; bVal = clients.find(c => c.id === b.clientId)?.name || ''; } if (aVal < bVal) return sortConfig.direction === 'asc' ? -1 : 1; if (aVal > bVal) return sortConfig.direction === 'asc' ? 1 : -1; return 0; }); } return items; }, [filtered, sortConfig, clients]);
+    return (
+      <Card title="Archives Globales">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4 bg-gray-50 p-4 rounded border">
+              <div><label className="text-xs font-bold block mb-1">Client</label><select className="w-full border p-2 rounded" value={filters.client} onChange={e => setFilters({...filters, client: e.target.value})}><option value="">Tous</option>{clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></div>
+              <div><label className="text-xs font-bold block mb-1">Statut</label><select className="w-full border p-2 rounded" value={filters.status} onChange={e => setFilters({...filters, status: e.target.value})}><option value="">Tous</option>{['ATELIER', 'A_LIVRER', 'LIVRE', 'FACTURE', 'AVOIR'].map(s => <option key={s} value={s}>{s}</option>)}</select></div>
+              <div><label className="text-xs font-bold block mb-1">Du</label><input type="date" className="w-full border p-2 rounded" value={filters.start} onChange={e => setFilters({...filters, start: e.target.value})} /></div>
+              <div><label className="text-xs font-bold block mb-1">Au</label><input type="date" className="w-full border p-2 rounded" value={filters.end} onChange={e => setFilters({...filters, end: e.target.value})} /></div>
+          </div>
+          <div className="overflow-x-auto"><table className="w-full text-sm text-left"><thead><tr><th className="cursor-pointer bg-gray-100 p-2 hover:bg-gray-200" onClick={() => handleSort('dateCreated')}>Date {sortConfig.key === 'dateCreated' && <ArrowUpDown size={14} className="inline"/>}</th><th className="cursor-pointer bg-gray-100 p-2 hover:bg-gray-200" onClick={() => handleSort('id')}>BT</th><th className="cursor-pointer bg-gray-100 p-2 hover:bg-gray-200" onClick={() => handleSort('clientName')}>Client</th><th className="cursor-pointer bg-gray-100 p-2 hover:bg-gray-200" onClick={() => handleSort('status')}>Statut</th><th className="p-2 bg-gray-100">Actions</th></tr></thead><tbody>{sortedFiltered.map(bt => (<tr key={bt.id} className="border-b hover:bg-gray-50"><td className="p-2">{formatDate(bt.dateCreated)}</td><td className="p-2 font-bold">#{bt.id}</td><td className="p-2">{clients.find(c=>c.id===bt.clientId)?.name}</td><td className="p-2"><span className="text-xs font-bold px-2 py-1 rounded bg-gray-200">{bt.status}</span></td><td className="p-2 flex gap-1">{bt.status !== 'FACTURE' ? (<><Button variant="ghost" onClick={() => openEditModal(bt)}><Edit2 size={14}/></Button><Button variant="ghost" onClick={(e) => {e.stopPropagation(); deleteBT(bt.id)}}><Trash2 size={14}/></Button></>) : <Lock size={14} className="text-gray-400 m-2"/>}</td></tr>))}</tbody></table></div>
+      </Card>
+    );
+  };
+
+  // 5. STATISTIQUES (MODIFIÉ: RENTABILITÉ)
+  const StatsModule = () => {
+    // Etats existants
+    const [serviceSearch, setServiceSearch] = useState('');
+    const [hourlyRate, setHourlyRate] = useState(() => localStorage.getItem('stats_hourlyRate') || 30);
+    const [serviceTimes, setServiceTimes] = useState(() => JSON.parse(localStorage.getItem('stats_serviceTimes')) || {});
+    const [startDate, setStartDate] = useState(new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10)); 
+    const [endDate, setEndDate] = useState(new Date().toISOString().slice(0, 10));
+
+    // Nouveaux états pour la rentabilité journalière
+    const [dailyStartDate, setDailyStartDate] = useState(getTodayDate());
+    const [dailyEndDate, setDailyEndDate] = useState(getTodayDate());
+    const [dailyStaff, setDailyStaff] = useState(0);
+    const [dailyHours, setDailyHours] = useState(0);
+
+    // États pour Mensuel et Annuel
+    const [monthlyDate, setMonthlyDate] = useState(getTodayDate().slice(0, 7)); // YYYY-MM
+    const [monthlyStaff, setMonthlyStaff] = useState(0);
+    const [monthlyDays, setMonthlyDays] = useState(22); // Default working days
+
+    const [annualYear, setAnnualYear] = useState(new Date().getFullYear().toString());
+    const [annualStaff, setAnnualStaff] = useState(0);
+    const [annualDays, setAnnualDays] = useState(250); // Default working days
+
+    useEffect(() => { localStorage.setItem('stats_hourlyRate', hourlyRate); }, [hourlyRate]);
+    useEffect(() => { localStorage.setItem('stats_serviceTimes', JSON.stringify(serviceTimes)); }, [serviceTimes]);
+
+    // Auto-update daily hours based on staff
+    useEffect(() => {
+        setDailyHours(dailyStaff * 7);
+    }, [dailyStaff]);
+
+    // Calcul rentabilité journalière (AVEC FOURCHETTE DE DATES)
+    const dailyData = useMemo(() => {
+        const deliveredToday = workOrders.filter(bt => {
+            if (!bt.dateDelivered) return false;
+            // dateDelivered est ISO string "YYYY-MM-DD..."
+            const d = bt.dateDelivered.slice(0, 10);
+            return d >= dailyStartDate && d <= dailyEndDate && ['LIVRE', 'BL_EN_COURS', 'FACTURE'].includes(bt.status);
+        });
+
+        const totalPieces = deliveredToday.reduce((acc, bt) => acc + (bt.pieces ? bt.pieces.reduce((s,p)=>s+p.quantity,0) : 0), 0);
+        
+        const totalTurnover = deliveredToday.reduce((acc, bt) => {
+             const btTotal = bt.pieces ? bt.pieces.reduce((accP, p) => accP + p.quantity * p.services.reduce((accS, s) => accS + s.price, 0), 0) : 0;
+             return acc + btTotal;
+        }, 0);
+
+        const totalCost = dailyHours * hourlyRate;
+        const netMargin = totalTurnover - totalCost;
+        const profitability = totalTurnover > 0 ? (netMargin / totalTurnover) * 100 : 0;
+
+        return {
+            btCount: deliveredToday.length,
+            pieces: totalPieces,
+            turnover: totalTurnover,
+            cost: totalCost,
+            margin: netMargin,
+            percent: profitability
+        };
+    }, [workOrders, dailyStartDate, dailyEndDate, dailyHours, hourlyRate]);
+
+    // Calcul rentabilité MENSUELLE
+    const monthlyData = useMemo(() => {
+        const targetMonth = monthlyDate; // YYYY-MM
+        const deliveredInMonth = workOrders.filter(bt => {
+            if (!bt.dateDelivered) return false;
+            return bt.dateDelivered.startsWith(targetMonth) && ['LIVRE', 'BL_EN_COURS', 'FACTURE'].includes(bt.status);
+        });
+        
+        const totalTurnover = deliveredInMonth.reduce((acc, bt) => {
+             const btTotal = bt.pieces ? bt.pieces.reduce((accP, p) => accP + p.quantity * p.services.reduce((accS, s) => accS + s.price, 0), 0) : 0;
+             return acc + btTotal;
+        }, 0);
+        
+        const totalPieces = deliveredInMonth.reduce((acc, bt) => acc + (bt.pieces ? bt.pieces.reduce((s,p)=>s+p.quantity,0) : 0), 0);
+
+        // Cost = Staff * 7 hours * Days * Rate
+        const totalHours = monthlyStaff * 7 * monthlyDays;
+        const totalCost = totalHours * hourlyRate;
+        const netMargin = totalTurnover - totalCost;
+        const profitability = totalTurnover > 0 ? (netMargin / totalTurnover) * 100 : 0;
+
+        return { btCount: deliveredInMonth.length, pieces: totalPieces, turnover: totalTurnover, cost: totalCost, margin: netMargin, percent: profitability };
+    }, [workOrders, monthlyDate, monthlyStaff, monthlyDays, hourlyRate]);
+
+    // Calcul rentabilité ANNUELLE
+    const annualData = useMemo(() => {
+        const targetYear = annualYear; // YYYY
+        const deliveredInYear = workOrders.filter(bt => {
+            if (!bt.dateDelivered) return false;
+            return bt.dateDelivered.startsWith(targetYear) && ['LIVRE', 'BL_EN_COURS', 'FACTURE'].includes(bt.status);
+        });
+
+        const totalTurnover = deliveredInYear.reduce((acc, bt) => {
+             const btTotal = bt.pieces ? bt.pieces.reduce((accP, p) => accP + p.quantity * p.services.reduce((accS, s) => accS + s.price, 0), 0) : 0;
+             return acc + btTotal;
+        }, 0);
+
+        const totalPieces = deliveredInYear.reduce((acc, bt) => acc + (bt.pieces ? bt.pieces.reduce((s,p)=>s+p.quantity,0) : 0), 0);
+
+        // Cost = Staff * 7 hours * Days * Rate
+        const totalHours = annualStaff * 7 * annualDays;
+        const totalCost = totalHours * hourlyRate;
+        const netMargin = totalTurnover - totalCost;
+        const profitability = totalTurnover > 0 ? (netMargin / totalTurnover) * 100 : 0;
+
+        return { btCount: deliveredInYear.length, pieces: totalPieces, turnover: totalTurnover, cost: totalCost, margin: netMargin, percent: profitability };
+    }, [workOrders, annualYear, annualStaff, annualDays, hourlyRate]);
+
+
+    const serviceStats = useMemo(() => {
+        const data = {};
+        const filtered = workOrders.filter(bt => { const d = new Date(bt.dateCreated).toISOString().slice(0, 10); return d >= startDate && d <= endDate && bt.status !== 'AVOIR'; });
+        filtered.forEach(bt => { if(bt.pieces) { bt.pieces.forEach(p => { p.services.forEach(s => { const name = s.name; if(!data[name]) { data[name] = { count: 0, revenue: 0 }; } data[name].count += p.quantity; data[name].revenue += (s.price * p.quantity); }); }); } });
+        let statsArray = Object.keys(data).map(name => { const item = data[name]; const avgPrice = item.count ? item.revenue / item.count : 0; const time = serviceTimes[name] || 0; const cost = time > 0 ? (time / 60) * hourlyRate : 0; const margin = avgPrice - cost; const marginRate = avgPrice > 0 ? (margin / avgPrice) * 100 : 0; return { name, count: item.count, revenue: item.revenue, avgPrice, time, cost, margin, marginRate }; });
+        
+        // --- NOUVEAU : CALCUL DE LA MOYENNE ---
+        const totalAvg = {
+            name: "TOTAL MOYEN",
+            count: statsArray.length > 0 ? statsArray.reduce((acc, s) => acc + s.count, 0) / statsArray.length : 0,
+            revenue: statsArray.length > 0 ? statsArray.reduce((acc, s) => acc + s.revenue, 0) / statsArray.length : 0,
+            avgPrice: statsArray.length > 0 ? statsArray.reduce((acc, s) => acc + s.avgPrice, 0) / statsArray.length : 0,
+            time: statsArray.length > 0 ? statsArray.reduce((acc, s) => acc + s.time, 0) / statsArray.length : 0,
+            cost: statsArray.length > 0 ? statsArray.reduce((acc, s) => acc + s.cost, 0) / statsArray.length : 0,
+            margin: statsArray.length > 0 ? statsArray.reduce((acc, s) => acc + s.margin, 0) / statsArray.length : 0,
+            marginRate: statsArray.length > 0 ? statsArray.reduce((acc, s) => acc + s.marginRate, 0) / statsArray.length : 0,
+            isTotal: true // Marqueur pour le style
+        };
+        // ----------------------------------------
+
+        if (serviceSearch) { statsArray = statsArray.filter(s => s.name.toLowerCase().includes(serviceSearch.toLowerCase())); }
+        
+        const sorted = statsArray.sort((a,b) => b.revenue - a.revenue); 
+        
+        // On ajoute la ligne de total au début si on a des données
+        return sorted.length > 0 ? [totalAvg, ...sorted] : [];
+    }, [workOrders, serviceSearch, hourlyRate, serviceTimes, startDate, endDate]);
+
+    const updateServiceTime = (name, val) => { const time = parseFloat(val) || 0; setServiceTimes(prev => ({...prev, [name]: time})); };
+
+    return (
+        <div className="space-y-6">
+            <h2 className="text-2xl font-bold text-gray-800">Rentabilité & Performance</h2>
+            
+            {/* CARTE RENTABILITÉ JOURNALIÈRE (MODIFIÉE AVEC RANGE) */}
+            <Card title="Rentabilité Journalière (ou Période courte)">
+                <div className="flex flex-col md:flex-row gap-6">
+                    <div className="w-full md:w-1/3 space-y-4">
+                        <div className="grid grid-cols-2 gap-2">
+                             <div><label className="block text-xs font-bold text-gray-500 uppercase mb-1">Du</label><input type="date" className="w-full border p-2 rounded" value={dailyStartDate} onChange={e => setDailyStartDate(e.target.value)} /></div>
+                             <div><label className="block text-xs font-bold text-gray-500 uppercase mb-1">Au</label><input type="date" className="w-full border p-2 rounded" value={dailyEndDate} onChange={e => setDailyEndDate(e.target.value)} /></div>
+                        </div>
+                        <div className="grid grid-cols-2 gap-4">
+                            <div><label className="block text-xs font-bold text-gray-500 uppercase mb-1">Effectif (Pers.)</label><input type="number" className="w-full border p-2 rounded" value={dailyStaff} onChange={e => setDailyStaff(parseInt(e.target.value) || 0)} placeholder="0" /></div>
+                            <div><label className="block text-xs font-bold text-gray-500 uppercase mb-1">Heures Payées (Auto)</label><input type="number" className="w-full border p-2 rounded bg-gray-50" value={dailyHours} onChange={e => setDailyHours(parseFloat(e.target.value) || 0)} placeholder="0" /></div>
+                        </div>
+                        <div><label className="block text-xs font-bold text-purple-600 uppercase mb-1">Taux Horaire Moyen (€/h)</label><input type="number" className="w-full border-2 border-purple-200 p-2 rounded font-bold text-purple-900" value={hourlyRate} onChange={e => setHourlyRate(e.target.value)} /></div>
+                    </div>
+                    
+                    <div className="w-full md:w-2/3 bg-gray-50 rounded p-4 border flex flex-col justify-center">
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-center mb-6">
+                            <div className="p-2 bg-white rounded shadow-sm"><div className="text-xs text-gray-500 uppercase font-bold">Tickets Livrés</div><div className="text-xl font-bold text-blue-600">{dailyData.btCount}</div></div>
+                            <div className="p-2 bg-white rounded shadow-sm"><div className="text-xs text-gray-500 uppercase font-bold">Pièces Travaillées</div><div className="text-xl font-bold text-blue-600">{dailyData.pieces}</div></div>
+                            <div className="p-2 bg-white rounded shadow-sm"><div className="text-xs text-gray-500 uppercase font-bold">CA Livraison</div><div className="text-xl font-bold text-green-600">{formatPrice(dailyData.turnover)}</div></div>
+                             <div className="p-2 bg-white rounded shadow-sm"><div className="text-xs text-gray-500 uppercase font-bold">Coût Main d'Oeuvre</div><div className="text-xl font-bold text-red-400">{formatPrice(dailyData.cost)}</div></div>
+                        </div>
+                        <div className="border-t pt-4">
+                             <div className="flex justify-between items-end">
+                                <div><div className="text-sm font-bold text-gray-600">Marge Nette (Période)</div><div className={`text-4xl font-black ${dailyData.margin >= 0 ? 'text-green-600' : 'text-red-600'}`}>{formatPrice(dailyData.margin)}</div></div>
+                                <div className="text-right"><div className="text-sm font-bold text-gray-600">Rentabilité</div><div className={`text-3xl font-black ${dailyData.percent > 20 ? 'text-green-500' : dailyData.percent > 0 ? 'text-orange-400' : 'text-red-500'}`}>{Math.round(dailyData.percent)}%</div></div>
+                             </div>
+                        </div>
+                    </div>
+                </div>
+            </Card>
+
+            {/* CARTE RENTABILITÉ MENSUELLE */}
+            <Card title="Rentabilité Mensuelle">
+                <div className="flex flex-col md:flex-row gap-6">
+                    <div className="w-full md:w-1/3 space-y-4">
+                        <div><label className="block text-xs font-bold text-gray-500 uppercase mb-1">Mois analysé</label><input type="month" className="w-full border p-2 rounded" value={monthlyDate} onChange={e => setMonthlyDate(e.target.value)} /></div>
+                        <div className="grid grid-cols-2 gap-4">
+                            <div><label className="block text-xs font-bold text-gray-500 uppercase mb-1">Effectif Moyen</label><input type="number" className="w-full border p-2 rounded" value={monthlyStaff} onChange={e => setMonthlyStaff(parseInt(e.target.value) || 0)} placeholder="0" /></div>
+                            <div><label className="block text-xs font-bold text-gray-500 uppercase mb-1">Jours Ouvrés</label><input type="number" className="w-full border p-2 rounded" value={monthlyDays} onChange={e => setMonthlyDays(parseInt(e.target.value) || 0)} placeholder="22" /></div>
+                        </div>
+                        <div className="text-xs text-gray-500 italic">Base calcul : 7h / jour / personne</div>
+                    </div>
+                    
+                    <div className="w-full md:w-2/3 bg-blue-50 rounded p-4 border flex flex-col justify-center">
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-center mb-6">
+                            <div className="p-2 bg-white rounded shadow-sm"><div className="text-xs text-gray-500 uppercase font-bold">Tickets Livrés</div><div className="text-xl font-bold text-blue-600">{monthlyData.btCount}</div></div>
+                            <div className="p-2 bg-white rounded shadow-sm"><div className="text-xs text-gray-500 uppercase font-bold">Pièces Travaillées</div><div className="text-xl font-bold text-blue-600">{monthlyData.pieces}</div></div>
+                            <div className="p-2 bg-white rounded shadow-sm"><div className="text-xs text-gray-500 uppercase font-bold">CA Livraison</div><div className="text-xl font-bold text-green-600">{formatPrice(monthlyData.turnover)}</div></div>
+                             <div className="p-2 bg-white rounded shadow-sm"><div className="text-xs text-gray-500 uppercase font-bold">Coût Main d'Oeuvre</div><div className="text-xl font-bold text-red-400">{formatPrice(monthlyData.cost)}</div></div>
+                        </div>
+                        <div className="border-t pt-4 border-blue-200">
+                             <div className="flex justify-between items-end">
+                                <div><div className="text-sm font-bold text-gray-600">Marge Nette (Mois)</div><div className={`text-4xl font-black ${monthlyData.margin >= 0 ? 'text-green-600' : 'text-red-600'}`}>{formatPrice(monthlyData.margin)}</div></div>
+                                <div className="text-right"><div className="text-sm font-bold text-gray-600">Rentabilité</div><div className={`text-3xl font-black ${monthlyData.percent > 20 ? 'text-green-500' : monthlyData.percent > 0 ? 'text-orange-400' : 'text-red-500'}`}>{Math.round(monthlyData.percent)}%</div></div>
+                             </div>
+                        </div>
+                    </div>
+                </div>
+            </Card>
+
+            {/* CARTE RENTABILITÉ ANNUELLE */}
+            <Card title="Rentabilité Annuelle">
+                <div className="flex flex-col md:flex-row gap-6">
+                    <div className="w-full md:w-1/3 space-y-4">
+                        <div><label className="block text-xs font-bold text-gray-500 uppercase mb-1">Année analysée</label><input type="number" className="w-full border p-2 rounded" value={annualYear} onChange={e => setAnnualYear(e.target.value)} /></div>
+                        <div className="grid grid-cols-2 gap-4">
+                            <div><label className="block text-xs font-bold text-gray-500 uppercase mb-1">Effectif Moyen</label><input type="number" className="w-full border p-2 rounded" value={annualStaff} onChange={e => setAnnualStaff(parseInt(e.target.value) || 0)} placeholder="0" /></div>
+                            <div><label className="block text-xs font-bold text-gray-500 uppercase mb-1">Jours Ouvrés</label><input type="number" className="w-full border p-2 rounded" value={annualDays} onChange={e => setAnnualDays(parseInt(e.target.value) || 0)} placeholder="250" /></div>
+                        </div>
+                        <div className="text-xs text-gray-500 italic">Base calcul : 7h / jour / personne</div>
+                    </div>
+                    
+                    <div className="w-full md:w-2/3 bg-orange-50 rounded p-4 border flex flex-col justify-center">
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-center mb-6">
+                            <div className="p-2 bg-white rounded shadow-sm"><div className="text-xs text-gray-500 uppercase font-bold">Tickets Livrés</div><div className="text-xl font-bold text-blue-600">{annualData.btCount}</div></div>
+                            <div className="p-2 bg-white rounded shadow-sm"><div className="text-xs text-gray-500 uppercase font-bold">Pièces Travaillées</div><div className="text-xl font-bold text-blue-600">{annualData.pieces}</div></div>
+                            <div className="p-2 bg-white rounded shadow-sm"><div className="text-xs text-gray-500 uppercase font-bold">CA Livraison</div><div className="text-xl font-bold text-green-600">{formatPrice(annualData.turnover)}</div></div>
+                             <div className="p-2 bg-white rounded shadow-sm"><div className="text-xs text-gray-500 uppercase font-bold">Coût Main d'Oeuvre</div><div className="text-xl font-bold text-red-400">{formatPrice(annualData.cost)}</div></div>
+                        </div>
+                        <div className="border-t pt-4 border-orange-200">
+                             <div className="flex justify-between items-end">
+                                <div><div className="text-sm font-bold text-gray-600">Marge Nette (Année)</div><div className={`text-4xl font-black ${annualData.margin >= 0 ? 'text-green-600' : 'text-red-600'}`}>{formatPrice(annualData.margin)}</div></div>
+                                <div className="text-right"><div className="text-sm font-bold text-gray-600">Rentabilité</div><div className={`text-3xl font-black ${annualData.percent > 20 ? 'text-green-500' : annualData.percent > 0 ? 'text-orange-400' : 'text-red-500'}`}>{Math.round(annualData.percent)}%</div></div>
+                             </div>
+                        </div>
+                    </div>
+                </div>
+            </Card>
+
+            <Card title="Paramètres d'Analyse (Par Période)">
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
+                    <div><label className="text-xs font-bold text-gray-500 uppercase mb-1">Du</label><input type="date" className="w-full border p-2 rounded" value={startDate} onChange={e => setStartDate(e.target.value)} /></div>
+                    <div><label className="text-xs font-bold text-gray-500 uppercase mb-1">Au</label><input type="date" className="w-full border p-2 rounded" value={endDate} onChange={e => setEndDate(e.target.value)} /></div>
+                    <div><label className="text-xs font-bold text-purple-600 uppercase mb-1">Coût Horaire Atelier (€/h)</label><div className="flex items-center"><input type="number" className="w-full border-2 border-purple-200 p-2 rounded font-bold text-purple-900" value={hourlyRate} onChange={e => setHourlyRate(e.target.value)} /><span className="ml-2 text-purple-600 font-bold">€</span></div></div>
+                    <div><label className="text-xs font-bold text-gray-500 uppercase mb-1">Rechercher Prestation</label><div className="relative"><Search className="absolute left-2 top-2.5 text-gray-400" size={16}/><input className="w-full pl-8 p-2 border rounded" placeholder="Ourlet, Zip..." value={serviceSearch} onChange={e => setServiceSearch(e.target.value)} /></div></div>
+                </div>
+            </Card>
+            <div className="bg-white rounded-lg shadow overflow-hidden border border-gray-200">
+                <table className="w-full text-sm">
+                    <thead className="bg-gray-50 text-gray-700"><tr><th className="p-3 text-left">Prestation</th><th className="p-3 text-center">Qté</th><th className="p-3 text-right">CA Total</th><th className="p-3 text-right text-blue-600">Prix Moyen</th><th className="p-3 text-center bg-yellow-50 w-32">Temps (min)</th><th className="p-3 text-right text-gray-500">Coût/Unit.</th><th className="p-3 text-right font-bold text-green-700">Marge/Unit.</th><th className="p-3 text-right">Rentabilité</th></tr></thead>
+                    <tbody className="divide-y">{serviceStats.map((stat, idx) => (
+                        <tr key={idx} className={stat.isTotal ? "bg-gray-100 font-bold border-b-2 border-gray-300" : "hover:bg-gray-50"}>
+                            <td className="p-3">{stat.name}</td>
+                            <td className="p-3 text-center">
+                                {stat.isTotal ? Math.round(stat.count) : <span className="bg-gray-100 px-2 py-1 rounded text-xs font-bold">{stat.count}</span>}
+                            </td>
+                            <td className="p-3 text-right">{formatPrice(stat.revenue)}</td>
+                            <td className="p-3 text-right text-blue-600">{formatPrice(stat.avgPrice)}</td>
+                            <td className={`p-3 text-center ${stat.isTotal ? '' : 'bg-yellow-50'}`}>
+                                {stat.isTotal ? Math.round(stat.time) : (
+                                    <input 
+                                        className="w-16 border border-yellow-200 p-1 rounded text-center text-sm focus:ring-2 ring-yellow-400 outline-none" 
+                                        type="number" 
+                                        placeholder="0"
+                                        value={serviceTimes[stat.name] || ''} 
+                                        onChange={(e) => updateServiceTime(stat.name, e.target.value)}
+                                    />
+                                )}
+                            </td>
+                            <td className="p-3 text-right text-gray-500 text-xs">{formatPrice(stat.cost)}</td>
+                            <td className={`p-3 text-right ${stat.margin >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                                {formatPrice(stat.margin)}
+                            </td>
+                            <td className="p-3 text-right">
+                                {(stat.time > 0 || stat.isTotal) ? (
+                                    <div className="flex items-center justify-end gap-1">
+                                        <div className={`w-2 h-2 rounded-full ${stat.marginRate > 50 ? 'bg-green-500' : stat.marginRate > 20 ? 'bg-orange-400' : 'bg-red-500'}`}></div>
+                                        <span className="text-xs font-bold">{Math.round(stat.marginRate)}%</span>
+                                    </div>
+                                ) : <span className="text-gray-300 text-xs">-</span>}
+                            </td>
+                        </tr>
+                    ))}
+                    {serviceStats.length === 0 && <tr><td colSpan="8" className="p-8 text-center text-gray-400 italic">Aucune donnée sur cette période.</td></tr>}</tbody>
+                </table>
+            </div>
+        </div>
+    );
+  };
+
+  // 6. FACTURATION (REFONTE)
+  const BillingModule = () => {
+    const [view, setView] = useState('dashboard'); 
+    const [selectedClient, setSelectedClient] = useState('');
+    const [invoiceData, setInvoiceData] = useState(null); 
+
+    const billingSummary = useMemo(() => {
+        const toBill = {};
+        const billedByClientMonth = {}; // Clé: clientId-YYYY-MM
+
+        workOrders.forEach(bt => {
+            const btTotal = bt.pieces ? bt.pieces.reduce((accP, p) => accP + p.services.reduce((accS, s) => accS + s.price, 0) * p.quantity, 0) : 0;
+
+            if (bt.status === 'LIVRE') {
+                if (!toBill[bt.clientId]) toBill[bt.clientId] = { count: 0, amount: 0, lastDate: bt.dateDelivered };
+                toBill[bt.clientId].count++;
+                toBill[bt.clientId].amount += btTotal;
+            } else if (bt.status === 'FACTURE') {
+                // On simule des factures mensuelles basées sur la date de livraison
+                // Si pas de date de livraison, on utilise la date de création
+                const dateRef = bt.dateDelivered || bt.dateCreated;
+                const d = new Date(dateRef);
+                const year = d.getFullYear();
+                const month = d.getMonth() + 1; // 1-12
+                const key = `${bt.clientId}-${year}-${month}`;
+
+                if (!billedByClientMonth[key]) {
+                    billedByClientMonth[key] = {
+                        clientId: bt.clientId,
+                        year,
+                        month,
+                        monthLabel: d.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' }),
+                        totalHT: 0,
+                        count: 0
+                    };
+                }
+                billedByClientMonth[key].totalHT += btTotal;
+                billedByClientMonth[key].count++;
+            }
+        });
+
+        // Conversion en tableau pour l'historique avec calculs aggrégés
+        const billedRows = Object.values(billedByClientMonth).map(row => {
+             // Calculs des totaux (trimestriel et annuel) pour ce client/année
+             // Note: Ceci est une approximation O(n^2) sur le nombre de mois facturés, acceptable pour cette échelle.
+             const allClientRows = Object.values(billedByClientMonth).filter(r => r.clientId === row.clientId && r.year === row.year);
+             
+             const annualTotal = allClientRows.reduce((sum, r) => sum + r.totalHT, 0);
+             
+             const currentQuarter = Math.ceil(row.month / 3);
+             const quarterlyTotal = allClientRows
+                .filter(r => Math.ceil(r.month / 3) === currentQuarter)
+                .reduce((sum, r) => sum + r.totalHT, 0);
+
+             return {
+                 ...row,
+                 totalTTC: row.totalHT * 1.2,
+                 totalMensuel: row.totalHT, // Facture mensuelle = total du mois
+                 totalTrimestriel: quarterlyTotal,
+                 totalAnnuel: annualTotal,
+                 factureNumber: `F${row.year}${String(row.month).padStart(2, '0')}-${row.clientId.substring(0, 4).toUpperCase()}`
+             };
+        });
+
+        // Tri par date décroissante
+        billedRows.sort((a, b) => {
+            if (a.year !== b.year) return b.year - a.year;
+            return b.month - a.month;
+        });
+
+        return { toBill, billedRows };
+    }, [workOrders]);
+
+    const filteredBTs = workOrders.filter(bt => bt.clientId === selectedClient && bt.status === 'LIVRE');
+    const stackedLines = useMemo(() => {
+        const stacked = {};
+        filteredBTs.forEach(bt => { if(bt.pieces) { bt.pieces.forEach(p => { p.services.forEach(s => { const key = `${s.name}::${s.price}`; if (!stacked[key]) stacked[key] = { description: s.name, unitPrice: s.price, quantity: 0, total: 0 }; const quantityToAdd = p.quantity; stacked[key].quantity += quantityToAdd; stacked[key].total += (s.price * quantityToAdd); }); }); } });
+        return Object.values(stacked).sort((a, b) => a.description.localeCompare(b.description));
+    }, [filteredBTs]);
+    const totalAmount = stackedLines.reduce((acc, l) => acc + l.total, 0);
+
+    const handlePrint = () => { setInvoiceData({ lines: stackedLines, total: totalAmount }); setTimeout(() => window.print(), 100); };
+    const validateInvoice = () => { if (window.confirm("Valider la facture pour ce client ? (Passage en statut FACTURÉ)")) { setWorkOrders(prev => prev.map(bt => filteredBTs.some(f => f.id === bt.id) ? { ...bt, status: 'FACTURE' } : bt)); handlePrint(); setView('dashboard'); } };
+
+    if (view === 'detail') {
+        return (
+             <div className="space-y-4">
+                 <Button variant="outline" onClick={() => setView('dashboard')}><ChevronRight className="rotate-180" size={16}/> Retour Tableau de Bord</Button>
+                 <Card title={`Facturation : ${clients.find(c => c.id === selectedClient)?.name}`}>
+                     <div className="bg-blue-50 p-4 rounded mb-4 flex justify-between items-center">
+                         <div><div className="text-sm text-blue-800 font-bold">Période en cours</div><div className="text-2xl font-bold text-blue-900">{filteredBTs.length} Bons de Livraison</div></div>
+                         <div className="text-right"><div className="text-sm text-blue-800 font-bold">Total HT</div><div className="text-3xl font-bold text-blue-900">{formatPrice(totalAmount)}</div></div>
+                     </div>
+                     <div className="flex justify-end gap-2"><Button onClick={validateInvoice}><CheckCircle size={16}/> Valider & Imprimer Facture</Button></div>
+                     <div className="mt-6 border-t pt-4">
+                        <h4 className="font-bold mb-2">Détail des prestations</h4>
+                        <table className="w-full text-sm text-left border"><thead className="bg-gray-100"><tr><th className="p-2">Qté</th><th className="p-2">Prestation</th><th className="p-2 text-right">PU</th><th className="p-2 text-right">Total</th></tr></thead><tbody>{stackedLines.map((l, i) => (<tr key={i} className="border-b"><td className="p-2 font-bold">{l.quantity}</td><td className="p-2">{l.description}</td><td className="p-2 text-right">{formatPrice(l.unitPrice)}</td><td className="p-2 text-right">{formatPrice(l.total)}</td></tr>))}</tbody></table>
+                     </div>
+                 </Card>
+                 {invoiceData && <div className="hidden print:block fixed inset-0 bg-white z-[9999] p-10 font-sans"><h1 className="text-3xl font-bold mb-4">FACTURE</h1><div className="mb-4">Client : {clients.find(c => c.id === selectedClient)?.name}</div><table className="w-full text-sm mb-6 border-collapse border border-black"><thead><tr className="bg-gray-100"><th className="border p-2">Qté</th><th className="border p-2">Prestation</th><th className="border p-2">PU</th><th className="border p-2">Total</th></tr></thead><tbody>{invoiceData.lines.map((l, i) => (<tr key={i}><td className="border p-2">{l.quantity}</td><td className="border p-2">{l.description}</td><td className="border p-2">{formatPrice(l.unitPrice)}</td><td className="border p-2">{formatPrice(l.total)}</td></tr>))}</tbody></table><div className="text-right text-xl font-bold">Total HT: {formatPrice(invoiceData.total)}</div></div>}
+             </div>
+        );
+    }
+    return (
+      <div className="space-y-6">
+        <h2 className="text-2xl font-bold text-gray-800">Tableau de Bord Facturation</h2>
+        <div className="grid grid-cols-1 gap-6">
+            <Card title="À FACTURER (Bons Livrés)">
+                {Object.keys(billingSummary.toBill).length === 0 ? <p className="text-gray-400 italic p-4">Rien à facturer.</p> : <table className="w-full text-sm"><thead><tr className="bg-blue-50 text-blue-900"><th className="p-2 text-left">Boutique</th><th className="p-2 text-center">BLs</th><th className="p-2 text-right">Est. HT</th><th className="p-2">Action</th></tr></thead><tbody>{Object.entries(billingSummary.toBill).map(([clientId, data]) => (<tr key={clientId} className="border-b hover:bg-gray-50"><td className="p-3 font-bold text-gray-700">{clients.find(c => c.id === clientId)?.name}</td><td className="p-3 text-center"><span className="bg-blue-100 text-blue-800 px-2 py-1 rounded-full text-xs font-bold">{data.count}</span></td><td className="p-3 text-right font-mono">{formatPrice(data.amount)}</td><td className="p-3 text-right"><Button size="sm" onClick={() => { setSelectedClient(clientId); setView('detail'); }}><ArrowUpDown size={14}/> Voir</Button></td></tr>))}</tbody></table>}
+            </Card>
+            
+            <Card title="HISTORIQUE (Boutiques Facturées)">
+                {billingSummary.billedRows.length === 0 ? <p className="text-gray-400 italic p-4">Aucun historique de facturation.</p> : 
+                 <div className="overflow-x-auto">
+                     <table className="w-full text-sm">
+                         <thead>
+                             <tr className="bg-gray-100 text-gray-700 font-bold">
+                                 <th className="p-3 text-left">Boutique</th>
+                                 <th className="p-3 text-left">N° Facture (Mois)</th>
+                                 <th className="p-3 text-right text-blue-600">Total HT</th>
+                                 <th className="p-3 text-right text-blue-800">Total TTC</th>
+                                 <th className="p-3 text-right bg-gray-50">Total Mensuel</th>
+                                 <th className="p-3 text-right bg-gray-50">Total Trimestriel</th>
+                                 <th className="p-3 text-right bg-gray-50">Total Annuel</th>
+                             </tr>
+                         </thead>
+                         <tbody>
+                             {billingSummary.billedRows.map((row, idx) => (
+                                 <tr key={idx} className="border-b hover:bg-gray-50">
+                                     <td className="p-3 font-bold text-gray-800">{clients.find(c => c.id === row.clientId)?.name}</td>
+                                     <td className="p-3 font-mono text-xs">{row.factureNumber} <span className="text-gray-400 ml-1">({row.monthLabel})</span></td>
+                                     <td className="p-3 text-right font-bold text-blue-600">{formatPrice(row.totalHT)}</td>
+                                     <td className="p-3 text-right font-bold text-blue-800">{formatPrice(row.totalTTC)}</td>
+                                     <td className="p-3 text-right bg-gray-50">{formatPrice(row.totalMensuel)}</td>
+                                     <td className="p-3 text-right bg-gray-50">{formatPrice(row.totalTrimestriel)}</td>
+                                     <td className="p-3 text-right bg-gray-50">{formatPrice(row.totalAnnuel)}</td>
+                                 </tr>
+                             ))}
+                         </tbody>
+                     </table>
+                 </div>
+                }
+            </Card>
+        </div>
+      </div>
+    );
+  };
+
+  // 7. CONFIGURATION
+  const ConfigModule = () => {
+      const [newCat, setNewCat] = useState('');
+      const [newClient, setNewClient] = useState({ name: '', email: '', address: '', siret: '', tva: '', isHeadquarters: false, headquartersId: '' });
+      const [newService, setNewService] = useState({ name: '', price: '', catId: '' });
+      const [newSpecific, setNewSpecific] = useState({ clientId: '', serviceId: '', price: '' });
+      const [newPass, setNewPass] = useState('');
+      const [infoForm, setInfoForm] = useState(companyInfo);
+      const [editClient, setEditClient] = useState(null); 
+
+      const addCategory = () => { if(newCat) { setCategories([...categories, {id: generateId(), name: newCat}]); setNewCat(''); } };
+      const addClient = () => { if(newClient.name) { setClients([...clients, {id: generateId(), ...newClient}]); setNewClient({name:'', email:'', address:'', siret:'', tva:'', isHeadquarters: false, headquartersId: ''}); } };
+      const updateClient = () => { if(editClient && editClient.name) { setClients(clients.map(c => c.id === editClient.id ? editClient : c)); setEditClient(null); showToast("Client modifié"); } };
+      const addService = () => { if(newService.name && newService.price && newService.catId) { setServices([...services, {id: generateId(), categoryId: newService.catId, name: newService.name, standardPrice: parseFloat(newService.price)}]); setNewService({name:'', price:'', catId:''}); } };
+      const addSpecificPrice = () => { if(newSpecific.clientId && newSpecific.serviceId && newSpecific.price) { const others = specificPrices.filter(sp => !(sp.clientId === newSpecific.clientId && sp.serviceId === newSpecific.serviceId)); setSpecificPrices([...others, {id: generateId(), clientId: newSpecific.clientId, serviceId: newSpecific.serviceId, price: parseFloat(newSpecific.price)}]); setNewSpecific({clientId:'', serviceId:'', price:''}); } };
+      const updatePassword = () => { if(newPass) { setAdminPassword(newPass); showToast("Mot de passe mis à jour"); setNewPass(''); } };
+      const saveCompanyInfo = () => { setCompanyInfo(infoForm); showToast("Infos entreprise enregistrées"); };
+      const handleExportData = () => { const data = { timestamp: new Date().toISOString(), clients, categories, services, specificPrices, workOrders, companyInfo }; const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = `backup_retoucherie_${new Date().toISOString().slice(0, 10)}.json`; a.click(); URL.revokeObjectURL(url); };
+      const handleImportData = (event) => { const file = event.target.files[0]; if (!file) return; if(!window.confirm("Remplacer TOUTES les données ?")) return; const reader = new FileReader(); reader.onload = (e) => { try { const data = JSON.parse(e.target.result); if (data.clients && data.services) { setClients(data.clients); setCategories(data.categories || []); setServices(data.services); setSpecificPrices(data.specificPrices || []); setWorkOrders(data.workOrders || []); setCompanyInfo(data.companyInfo || companyInfo); showToast("Restauré !"); } else { showToast("Fichier invalide", 'error'); } } catch (err) { showToast("Erreur lecture", 'error'); } }; reader.readAsText(file); };
+
+      return (
+          <div className="space-y-6">
+              <div className="flex justify-between items-center mb-4"><h2 className="text-xl font-bold">Configuration Admin</h2><div className="flex gap-2"><Button variant="magic" onClick={handleExportData}><Download size={16}/> Backup</Button><label className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 rounded cursor-pointer hover:bg-gray-50"><Upload size={16}/> Restore <input type="file" className="hidden" accept=".json" onChange={handleImportData}/></label><Button variant="danger" onClick={() => setIsAuthenticated(false)}><LogOut size={16}/></Button></div></div>
+              {editClient && ( <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[10000] p-4"><div className="bg-white p-6 rounded shadow-xl w-full max-w-lg"><h3 className="font-bold text-lg mb-4">Modifier {editClient.name}</h3>
+              <div className="space-y-3 h-[60vh] overflow-y-auto">
+                <input className="w-full border p-2 rounded" placeholder="Nom" value={editClient.name} onChange={e => setEditClient({...editClient, name: e.target.value})} />
+                <input className="w-full border p-2 rounded" placeholder="Email" value={editClient.email} onChange={e => setEditClient({...editClient, email: e.target.value})} />
+                <input className="w-full border p-2 rounded" placeholder="Adresse" value={editClient.address} onChange={e => setEditClient({...editClient, address: e.target.value})} />
+                <input className="w-full border p-2 rounded" placeholder="SIRET" value={editClient.siret} onChange={e => setEditClient({...editClient, siret: e.target.value})} />
+                <input className="w-full border p-2 rounded" placeholder="TVA" value={editClient.tva} onChange={e => setEditClient({...editClient, tva: e.target.value})} />
+                
+                <div className="bg-orange-50 p-2 rounded border border-orange-100">
+                    <div className="flex items-center gap-2 mb-2">
+                        <input type="checkbox" id="editIsHQ" checked={editClient.isHeadquarters || false} onChange={e => setEditClient({...editClient, isHeadquarters: e.target.checked, headquartersId: ''})} />
+                        <label htmlFor="editIsHQ" className="text-sm font-bold text-orange-800">Est un Siège Gestionnaire ?</label>
+                    </div>
+                    {!editClient.isHeadquarters && (
+                        <div>
+                            <label className="text-xs font-bold text-gray-500 block mb-1">Rattaché au Siège :</label>
+                            <select className="w-full border p-2 rounded text-sm" value={editClient.headquartersId || ''} onChange={e => setEditClient({...editClient, headquartersId: e.target.value})}>
+                                <option value="">-- Aucun --</option>
+                                {clients.filter(c => c.isHeadquarters && c.id !== editClient.id).map(hq => (
+                                    <option key={hq.id} value={hq.id}>{hq.name}</option>
+                                ))}
+                            </select>
+                        </div>
+                    )}
+                </div>
+
+                <div className="flex items-center gap-2 bg-gray-50 p-2 rounded"><input type="checkbox" id="editAuto" checked={editClient.autoGenerateBt || false} onChange={e => setEditClient({...editClient, autoGenerateBt: e.target.checked})} /><label htmlFor="editAuto" className="text-sm font-bold">Génération Auto BT ?</label></div>{editClient.autoGenerateBt && (<div className="flex gap-2"><input className="w-full border p-2 rounded" placeholder="Préfixe (ex: CLR)" value={editClient.btPrefix || ''} onChange={e => setEditClient({...editClient, btPrefix: e.target.value})} /><input type="number" className="w-24 border p-2 rounded" placeholder="Compteur" value={editClient.nextBtSequence || 1} onChange={e => setEditClient({...editClient, nextBtSequence: parseInt(e.target.value)})} /></div>)}</div><div className="flex justify-end gap-2 mt-4 pt-4 border-t"><Button variant="outline" onClick={() => setEditClient(null)}>Annuler</Button><Button onClick={updateClient}>Enregistrer</Button></div></div></div> )}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <Card title="Information Entreprise"><div className="space-y-2"><input className="w-full border p-2 rounded" placeholder="Nom de la retoucherie" value={infoForm.name} onChange={e => setInfoForm({...infoForm, name: e.target.value})} /><input className="w-full border p-2 rounded" placeholder="Adresse complète" value={infoForm.address} onChange={e => setInfoForm({...infoForm, address: e.target.value})} /><input className="w-full border p-2 rounded" placeholder="SIRET / RCS" value={infoForm.siret} onChange={e => setInfoForm({...infoForm, siret: e.target.value})} /><input className="w-full border p-2 rounded" placeholder="Pied de page (Facture/BL)" value={infoForm.footer} onChange={e => setInfoForm({...infoForm, footer: e.target.value})} /><Button onClick={saveCompanyInfo} variant="success">Enregistrer les infos</Button></div></Card>
+                  <Card title="Gestion des Clients">
+                      <div className="flex flex-col gap-2 mb-4 bg-blue-50 p-2 rounded border border-blue-100">
+                          <div className="flex gap-2"><input className="border p-2 rounded flex-1" placeholder="Nom Boutique *" value={newClient.name} onChange={e => setNewClient({...newClient, name: e.target.value})} /><input className="border p-2 rounded flex-1" placeholder="Email" value={newClient.email} onChange={e => setNewClient({...newClient, email: e.target.value})} /></div><input className="border p-2 rounded w-full" placeholder="Adresse complète (Facultatif)" value={newClient.address} onChange={e => setNewClient({...newClient, address: e.target.value})} /><div className="flex gap-2"><input className="border p-2 rounded flex-1" placeholder="SIRET (Facultatif)" value={newClient.siret} onChange={e => setNewClient({...newClient, siret: e.target.value})} /><input className="border p-2 rounded flex-1" placeholder="N° TVA (Facultatif)" value={newClient.tva} onChange={e => setNewClient({...newClient, tva: e.target.value})} /></div>
+                          <div className="bg-white p-2 rounded border border-blue-200 mt-2">
+                                <div className="flex items-center gap-2 mb-2">
+                                    <input type="checkbox" id="newIsHQ" checked={newClient.isHeadquarters || false} onChange={e => setNewClient({...newClient, isHeadquarters: e.target.checked, headquartersId: ''})} />
+                                    <label htmlFor="newIsHQ" className="text-sm font-bold text-blue-800">Est un Siège Gestionnaire ?</label>
+                                </div>
+                                {!newClient.isHeadquarters && (
+                                    <div>
+                                        <label className="text-xs font-bold text-gray-500 block mb-1">Rattaché au Siège :</label>
+                                        <select className="w-full border p-2 rounded text-sm" value={newClient.headquartersId || ''} onChange={e => setNewClient({...newClient, headquartersId: e.target.value})}>
+                                            <option value="">-- Aucun --</option>
+                                            {clients.filter(c => c.isHeadquarters).map(hq => (
+                                                <option key={hq.id} value={hq.id}>{hq.name}</option>
+                                            ))}
+                                        </select>
+                                    </div>
+                                )}
+                          </div>
+                          <div className="flex items-center gap-2 mt-2 border-t pt-2 border-blue-200"><input type="checkbox" id="newAuto" checked={newClient.autoGenerateBt || false} onChange={e => setNewClient({...newClient, autoGenerateBt: e.target.checked})} /><label htmlFor="newAuto" className="text-sm font-bold text-blue-800">Génération Auto BT ?</label></div>{newClient.autoGenerateBt && (<div className="flex gap-2 animate-in fade-in slide-in-from-top-1"><input className="border p-2 rounded flex-1" placeholder="Préfixe (ex: CLR)" value={newClient.btPrefix || ''} onChange={e => setNewClient({...newClient, btPrefix: e.target.value})} /><input type="number" className="border p-2 rounded w-24" placeholder="Compteur" value={newClient.nextBtSequence || 1} onChange={e => setNewClient({...newClient, nextBtSequence: parseInt(e.target.value)})} /></div>)}<Button onClick={addClient} className="w-full justify-center mt-2"><Plus size={16}/> Ajouter le client</Button>
+                      </div>
+                      <ul className="space-y-2 max-h-40 overflow-y-auto">{clients.map(c => (<li key={c.id} className="flex justify-between items-center border-b pb-1"><div className="flex-1"><div className="font-bold flex items-center gap-2">{c.name} {c.isHeadquarters && <span className="bg-orange-100 text-orange-800 text-[10px] px-1 rounded border border-orange-200">SIÈGE</span>} {c.headquartersId && <span className="bg-gray-100 text-gray-600 text-[10px] px-1 rounded border">lié à {clients.find(h=>h.id===c.headquartersId)?.name}</span>}</div><div className="text-xs text-gray-500">{c.email}{c.autoGenerateBt && <span className="ml-2 text-purple-600 font-bold">AUTO: {c.btPrefix}{c.nextBtSequence}</span>}</div></div><div className="flex gap-1"><button onClick={() => setEditClient(c)} className="text-blue-500 hover:text-blue-700 p-1"><Edit2 size={16}/></button><button onClick={() => setClients(clients.filter(x => x.id !== c.id))} className="text-red-400 hover:text-red-600 p-1"><Trash2 size={16}/></button></div></li>))}</ul>
+                  </Card>
+                  <Card title="Tarifs Négociés"><div className="flex flex-col gap-2 mb-4 bg-yellow-50 p-2 rounded"><select className="border p-2 rounded" value={newSpecific.clientId} onChange={e => setNewSpecific({...newSpecific, clientId: e.target.value})}><option value="">Client (ou Siège)...</option>{clients.map(c => <option key={c.id} value={c.id}>{c.name} {c.isHeadquarters ? '(Siège)' : ''}</option>)}</select><select className="border p-2 rounded" value={newSpecific.serviceId} onChange={e => setNewSpecific({...newSpecific, serviceId: e.target.value})}><option value="">Service...</option>{services.map(s => <option key={s.id} value={s.id}>{s.name} ({s.standardPrice}€)</option>)}</select><div className="flex gap-2"><input type="number" className="border p-2 rounded flex-1" placeholder="Nouveau Prix" value={newSpecific.price} onChange={e => setNewSpecific({...newSpecific, price: e.target.value})} /><Button onClick={addSpecificPrice}><Plus size={16}/></Button></div></div><ul className="space-y-2 max-h-40 overflow-y-auto">{specificPrices.map(sp => <li key={sp.id} className="flex justify-between border-b text-xs pb-1"><span>{clients.find(c=>c.id===sp.clientId)?.name} - {services.find(s=>s.id===sp.serviceId)?.name}</span><span className="font-bold">{sp.price}€</span><button onClick={() => setSpecificPrices(specificPrices.filter(x => x.id !== sp.id))} className="text-red-400"><Trash2 size={12}/></button></li>)}</ul></Card>
+                  <Card title="Catalogue : Catégories"><div className="flex gap-2 mb-4"><input className="border p-2 rounded flex-1" placeholder="Nouvelle catégorie" value={newCat} onChange={e => setNewCat(e.target.value)} /><Button onClick={addCategory}><Plus size={16}/></Button></div><ul className="space-y-2">{categories.map(c => <li key={c.id} className="flex justify-between border-b pb-1"><span>{c.name}</span><button onClick={() => setCategories(categories.filter(x => x.id !== c.id))} className="text-red-400"><Trash2 size={14}/></button></li>)}</ul></Card>
+                  <Card title="Catalogue : Prestations"><div className="flex flex-col gap-2 mb-4 bg-gray-50 p-2 rounded"><select className="border p-2 rounded" value={newService.catId} onChange={e => setNewService({...newService, catId: e.target.value})}><option value="">Lier à...</option>{categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select><div className="flex gap-2"><input className="border p-2 rounded flex-1" placeholder="Nom" value={newService.name} onChange={e => setNewService({...newService, name: e.target.value})} /><input type="number" className="border p-2 rounded w-24" placeholder="Prix €" value={newService.price} onChange={e => setNewService({...newService, price: e.target.value})} /><Button onClick={addService}><Plus size={16}/></Button></div></div><div className="max-h-60 overflow-y-auto"><table className="w-full text-sm"><tbody>{services.map(s => <tr key={s.id} className="border-b"><td className="text-gray-500 text-xs">{categories.find(c=>c.id===s.categoryId)?.name}</td><td>{s.name}</td><td className="font-bold">{s.standardPrice}€</td><td className="text-right"><button onClick={() => setServices(services.filter(x => x.id !== s.id))} className="text-red-400"><Trash2 size={14}/></button></td></tr>)}</tbody></table></div></Card>
+                  <Card title="Sécurité"><div className="flex gap-2"><input type="password" className="border p-2 rounded flex-1" placeholder="Nouveau mot de passe" value={newPass} onChange={e => setNewPass(e.target.value)} /><Button onClick={updatePassword} variant="warning">Changer</Button></div></Card>
+              </div>
+          </div>
+      );
+  };
+
+  // --- ECRAN DE VERROUILLAGE ---
+  const LockScreen = () => (
+      <div className="flex flex-col items-center justify-center h-64 bg-gray-50 rounded-lg border border-gray-200">
+          <Lock size={48} className="text-gray-400 mb-4"/><h3 className="text-lg font-bold text-gray-700 mb-4">Accès Protégé</h3>
+          <form onSubmit={handleLogin} className="flex gap-2"><input type="password" autoFocus className="border p-2 rounded w-64 text-center" placeholder="Mot de passe" value={passwordInput} onChange={e => setPasswordInput(e.target.value)}/><Button type="submit">Déverrouiller</Button></form>
+      </div>
+  );
+
+  // --- LAYOUT ---
+  return (
+    <div className="min-h-screen bg-gray-100 font-sans text-gray-900">
+      {notification && <Toast message={notification.message} type={notification.type} onClose={() => setNotification(null)} />}
+      <EditModal />
+      <div className="fixed inset-y-0 left-0 w-20 md:w-64 bg-slate-900 text-white flex flex-col no-print">
+        <div className="p-4 flex items-center gap-3 border-b border-slate-700 h-16"><Scissors className="text-yellow-400" /><span className="font-bold text-xl hidden md:block">RetouchePro</span></div>
+        <nav className="flex-1 py-6 space-y-2">
+          {['reception', 'atelier', 'livraison', 'historique'].map(id => <Button key={id} variant="ghost" className={`w-full justify-start text-white ${activeTab===id?'bg-blue-600':''}`} onClick={() => setActiveTab(id)}><span className="capitalize">{id === 'livraison' ? 'Livraisons' : id}</span></Button>)}
+          <div className="border-t border-slate-700 my-2 pt-2"><div className="px-4 text-xs text-slate-500 uppercase font-bold mb-1 hidden md:block">Admin</div>{['stats', 'facturation', 'config'].map(id => <Button key={id} variant="ghost" className={`w-full justify-start text-white ${activeTab===id?'bg-blue-600':''}`} onClick={() => setActiveTab(id)}><span className="capitalize">{id}</span></Button>)}</div>
+        </nav>
+      </div>
+      <main className="ml-20 md:ml-64 p-4 md:p-8">
+        <header className="flex justify-between items-center mb-8 no-print"><h1 className="text-2xl font-bold text-gray-800 capitalize">{activeTab === 'livraison' ? 'Livraisons' : activeTab}</h1></header>
+        {activeTab === 'reception' && <ReceptionModule />}
+        {activeTab === 'atelier' && <WorkshopModule />}
+        {activeTab === 'livraison' && <DeliveryModule />}
+        {activeTab === 'historique' && <HistoryModule />}
+        {['stats', 'facturation', 'config'].includes(activeTab) && (isAuthenticated ? <>{activeTab === 'config' && <ConfigModule />}{activeTab === 'stats' && <StatsModule />}{activeTab === 'facturation' && <BillingModule />}</> : <LockScreen />)}
+      </main>
+    </div>
+  );
+}
